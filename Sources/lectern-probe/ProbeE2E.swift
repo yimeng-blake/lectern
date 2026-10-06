@@ -14,6 +14,10 @@ func e2eProbeCommands() -> [ProbeCommand] {
                 + "[--effort E] [--fast] [--image] [--whole] [--radius R] [--followup Q [--followup-page N]] "
                 + "[--expect \"a|b\"] [--followup-expect \"a|b\"] [--allow-credits] [--show-prompt] [--timeout S] \"question\"",
             run: e2eAsk),
+        ProbeCommand(
+            name: "title",
+            help: "--provider claude|codex [--home shared|isolated] --question Q --answer A",
+            run: e2eTitle),
     ]
 }
 
@@ -172,6 +176,52 @@ private func e2eAsk(_ args: [String]) async -> Int32 {
     session.shutdown()
     try? await Task.sleep(nanoseconds: 1_000_000_000)   // let children exit after SIGTERM
     return status
+}
+
+/// ConversationTitler as ChatModel calls it after a conversation's first answer: the local fallback,
+/// then the model title (one call to the provider's lightest model; Codex never spends purchased credits).
+@MainActor
+private func e2eTitle(_ args: [String]) async -> Int32 {
+    setvbuf(stdout, nil, _IOLBF, 0)
+    guard let providerName = option("provider", in: args), let provider = Provider(rawValue: providerName),
+          let question = option("question", in: args), let answer = option("answer", in: args) else {
+        print("usage: lectern-probe title --provider claude|codex [--home shared|isolated] --question Q --answer A")
+        return 2
+    }
+    let homeName = option("home", in: args) ?? CodexHomeMode.isolated.rawValue
+    guard let mode = CodexHomeMode(rawValue: homeName) else {
+        print("unknown --home \(homeName) (use isolated or shared)")
+        return 2
+    }
+    print("fallback: \(ConversationTitler.fallbackTitle(question: question))")
+
+    // Both services, as AppServices builds them; only `provider` is asked.
+    let claudePath = option("claude-path", in: args), codexPath = option("codex-path", in: args)
+    let claude = ClaudeService(pathOverride: { claudePath })
+    let codex = CodexService(pathOverride: { codexPath }, homeMode: { mode })
+    codex.urlOpener = { url in print("(not opening sign-in page on \(url.host ?? "?"))") }
+    defer { codex.stop() }
+    switch provider {
+    case .claude:
+        _ = await waitForSettledAuth(claude)
+        print("claude: \(claude.binaryPath ?? "-") · auth: \(e2eDescribe(claude.authState)) · model haiku")
+    case .codex:
+        await codex.refresh()
+        let model = CodexService.oneShotModel(in: codex.models)
+        print("codex: \(codex.binaryPath ?? "-") · home \(mode.rawValue) · auth: \(e2eDescribe(codex.authState))"
+              + " · credits check \(codex.creditsCheck()) · model \(model?.id ?? "-")")
+    }
+
+    let start = Date()
+    let title = await ConversationTitler.title(question: question, answer: answer, provider: provider,
+                                               claude: claude, codex: codex)
+    let elapsed = String(format: "%.1f", Date().timeIntervalSince(start))
+    guard let title else {
+        print("title: nil after \(elapsed) s (the fallback stays)")
+        return 1
+    }
+    print("title: \(title) (\(elapsed) s)")
+    return 0
 }
 
 private enum E2EOutcome {

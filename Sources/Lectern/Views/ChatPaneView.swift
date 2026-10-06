@@ -2,8 +2,9 @@ import AppKit
 import LecternCore
 import SwiftUI
 
-/// The chat side of a document window. Each part is its own view so that streaming updates
-/// (which only touch `model.messages`) re-render only the transcript.
+/// One conversation's chat (a panel of the window's ConversationStack, under its title bar). Each part
+/// is its own view so that streaming updates (which only touch `model.messages`) re-render only the
+/// transcript.
 struct ChatPaneView: View {
     @Bindable var model: ChatModel
 
@@ -24,8 +25,8 @@ private struct TranscriptSection: View {
     let model: ChatModel
 
     var body: some View {
-        TranscriptWebView(messages: model.messages) { page in
-            model.goTo(page: page)
+        TranscriptWebView(messages: model.messages, documentTitle: model.document.title) { page, claim in
+            model.goTo(page: page, claim: claim)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .textBackgroundColor))  // same color chat.css paints; shown while loading
@@ -59,6 +60,8 @@ private struct ChatInputArea: View {
                 .help("Whole document — sends every page if it fits, otherwise the best-matching pages")
                 .accessibilityLabel("Whole document")
 
+                presetsMenu
+
                 Text(contextHint)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -72,6 +75,20 @@ private struct ChatInputArea: View {
             .controlSize(.small)
         }
         .padding(10)
+        // Typing in a conversation makes it the one Ask Lectern goes to.
+        .onChange(of: editorFocused) { _, focused in
+            if focused { model.takeFocus() }
+        }
+        // A new conversation's input takes the keyboard focus.
+        .task(id: model.inputFocusRequest) {
+            guard model.inputFocusRequest > 0, !model.isCollapsed else { return }
+            try? await Task.sleep(for: .milliseconds(50))
+            editorFocused = true
+        }
+        // A collapsed panel's hidden input must not keep the keyboard.
+        .onChange(of: model.isCollapsed) { _, collapsed in
+            if collapsed { editorFocused = false }
+        }
     }
 
     // MARK: Editor
@@ -141,8 +158,9 @@ private struct ChatInputArea: View {
                     .font(.system(size: 22))
             }
             .buttonStyle(.borderless)
-            .keyboardShortcut(".", modifiers: .command)
-            .help("Stop (⌘.)")
+            // Only the focused conversation's Stop answers ⌘. (several may be answering at once).
+            .keyboardShortcut(model.isFocused ? KeyboardShortcut(".", modifiers: .command) : nil)
+            .help(model.isFocused ? "Stop (⌘.)" : "Stop")
             .accessibilityLabel("Stop")
             .padding(.bottom, 4)
         } else {
@@ -157,6 +175,31 @@ private struct ChatInputArea: View {
             .accessibilityLabel("Send")
             .padding(.bottom, 4)
         }
+    }
+
+    // MARK: Presets
+
+    private var presetsMenu: some View {
+        Menu {
+            ForEach(ChatPreset.Group.allCases, id: \.self) { group in
+                Section(group.rawValue) {
+                    ForEach(ChatPreset.all.filter { $0.group == group }) { preset in
+                        Button(preset.title) {
+                            model.takeFocus()
+                            model.runPreset(preset)
+                        }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "text.badge.star")
+        }
+        .menuStyle(.button)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(model.isBusy || model.creditsGuardActive || !model.authState.isSignedIn)
+        .help("Presets — one-click questions about this document")
+        .accessibilityLabel("Presets")
     }
 
     // MARK: Context hint

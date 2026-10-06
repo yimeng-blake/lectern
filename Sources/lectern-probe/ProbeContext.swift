@@ -10,8 +10,16 @@ func contextProbeCommands() -> [ProbeCommand] {
             run: contextBuildCommand),
         ProbeCommand(
             name: "pdf-info",
-            help: "--pdf P [--query \"words\"] [--render N (1-based)]: pages, hash, outline, extraction timing",
+            help: "--pdf P [--query \"words\"] [--render N (1-based)]: pages, hash, outline, extraction timing, OCR/table pages",
             run: pdfInfoCommand),
+        ProbeCommand(
+            name: "verify-citations",
+            help: "--pdf P --answer-file F: check each [p. N] citation in a markdown answer against the cited pages",
+            run: verifyCitationsCommand),
+        ProbeCommand(
+            name: "locate",
+            help: "--pdf P --page N (1-based) --claim \"text\": the passage on page N that best supports the claim",
+            run: locateCommand),
     ]
 }
 
@@ -104,6 +112,13 @@ private func pdfInfoCommand(_ args: [String]) async -> Int32 {
         if text.count < ContextBuilder.sparseTextThreshold { emptyPages += 1 }
     }
     print("full_extract_ms: \(milliseconds(since: start)) (\(chars) chars, ~\(chars / 4) tokens, \(emptyPages) pages under \(ContextBuilder.sparseTextThreshold) chars)")
+    var ocrPages: [Int] = [], tablePages: [Int] = []
+    for i in 0..<doc.pageCount {
+        if await doc.pageTextSource(i) == .ocr { ocrPages.append(i + 1) }
+        if await doc.isTableHeavy(i) { tablePages.append(i + 1) }
+    }
+    print("ocr_pages: \(ocrPages.prefix(50))\(ocrPages.count > 50 ? " (+\(ocrPages.count - 50) more)" : "")")
+    print("table_pages: \(tablePages.prefix(50))\(tablePages.count > 50 ? " (+\(tablePages.count - 50) more)" : "")")
 
     start = DispatchTime.now()
     let outline = await doc.outline()
@@ -123,5 +138,43 @@ private func pdfInfoCommand(_ args: [String]) async -> Int32 {
         let url = await doc.renderPagePNG(n - 1)
         print("render p. \(n): \(url?.path ?? "failed") (\(milliseconds(since: start)) ms)")
     }
+    return 0
+}
+
+@MainActor
+private func verifyCitationsCommand(_ args: [String]) async -> Int32 {
+    guard let doc = await openDocument(args) else { return 2 }
+    guard let path = option("answer-file", in: args),
+          let answer = try? String(contentsOfFile: (path as NSString).expandingTildeInPath, encoding: .utf8) else {
+        print("error: --answer-file <path> is required and must be readable UTF-8")
+        return 2
+    }
+    let start = DispatchTime.now()
+    let checks = await CitationVerifier.verify(answer: answer, in: doc)
+    print("\(checks.count) citation(s) (\(milliseconds(since: start)) ms)")
+    for check in checks {
+        let pages = check.pages.map(String.init).joined(separator: ", ")
+        let missing = check.missing.isEmpty ? "" : " missing: \(check.missing.joined(separator: " · "))"
+        print("#\(check.ordinal) [p. \(pages)] \(check.status.rawValue)\(missing)\n    claim: \(check.claim)")
+    }
+    return 0
+}
+
+@MainActor
+private func locateCommand(_ args: [String]) async -> Int32 {
+    guard let doc = await openDocument(args) else { return 2 }
+    guard let page = option("page", in: args).flatMap(Int.init), page >= 1, page <= doc.pageCount,
+          let claim = option("claim", in: args) else {
+        print("error: --page N (1...\(doc.pageCount)) and --claim \"text\" are required")
+        return 2
+    }
+    let start = DispatchTime.now()
+    guard let range = await PassageLocator.locate(claim: claim, page: page - 1, in: doc) else {
+        print("no passage found (\(milliseconds(since: start)) ms)")
+        return 1
+    }
+    let text = (doc.pdf.page(at: page - 1)?.string ?? "") as NSString
+    print("range: \(range.location)..<\(range.location + range.length) (\(milliseconds(since: start)) ms)")
+    print("passage: \(range.upperBound <= text.length ? text.substring(with: range) : "<out of bounds>")")
     return 0
 }

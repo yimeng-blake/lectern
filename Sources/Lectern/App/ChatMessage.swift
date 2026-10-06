@@ -18,11 +18,14 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     /// 1-based pages sent as context with this user message.
     var pages: [Int]
     var createdAt: Date
+    /// Assistant messages: the answer's [p. N] citations checked against the cited pages, in order.
+    /// Optional, so sessions saved before it existed still decode.
+    var citationChecks: [CitationCheck]?
 }
 
 extension ChatMessage {
     init(role: Role, provider: Provider, text: String, status: Status = .done, model: String? = nil) {
         self.init(id: UUID(), role: role, provider: provider, model: model, text: text, status: status,
-                  errorText: nil, pages: [], createdAt: Date())
+                  errorText: nil, pages: [], createdAt: Date(), citationChecks: nil)
     }
 }

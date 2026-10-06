@@ -5,6 +5,14 @@ import ImageIO
 import PDFKit
 import UniformTypeIdentifiers
 
+/// Where a page's text came from.
+public enum TextSource: String, Sendable {
+    case pdfText
+    /// Recognized from the rendered page (a scan): the page had (almost) no extractable text.
+    case ocr
+    case none
+}
+
 /// An open PDF. `pdf` belongs to the UI; text extraction, outline reading and rendering run on a
 /// private serial queue against a second PDFDocument built from the same bytes, because PDFKit
 /// objects are not thread-safe.
@@ -21,10 +29,16 @@ public final class ReaderDocument: @unchecked Sendable {
     private let worker: PDFDocument
     private let queue = DispatchQueue(label: "Lectern.ReaderDocument", qos: .userInitiated)
     private var textCache: [Int: String] = [:]
+    private var sourceCache: [Int: TextSource] = [:]
     private var cachedOutline: [(title: String, page: Int)]?
     private var searchIndex: PageSearchIndex?
 
     static let outlineLimit = 200
+    /// Pages with fewer non-space characters of PDF text than this are OCR'd when they show something.
+    static let ocrTextThreshold = 25
+    static let ocrLongEdge = 2000
+    /// Pages rendered (and held in memory) at once while OCR runs in parallel.
+    static let ocrBatch = 4
 
     public init?(data: Data, fileURL: URL?, title: String) {
         guard let ui = PDFDocument(data: data), let worker = PDFDocument(data: data) else { return nil }
@@ -49,6 +63,7 @@ public final class ReaderDocument: @unchecked Sendable {
         return await onQueue {
             let ok = self.worker.unlock(withPassword: password)
             self.textCache = [:]
+            self.sourceCache = [:]
             self.cachedOutline = nil
             self.searchIndex = nil
             return ok
@@ -62,22 +77,108 @@ public final class ReaderDocument: @unchecked Sendable {
 
     // MARK: Text
 
-    /// 0-based. "" for pages without extractable text or out-of-range indexes.
+    /// 0-based. "" for pages without extractable text or out-of-range indexes. A scanned page (no PDF
+    /// text but visible content) returns OCR text, cached in memory and under `AppPaths.cache`.
     public func pageText(_ index: Int) async -> String {
         await onQueue { self.textOnQueue(index) }
     }
 
+    /// Where `pageText(index)` comes from (extracting it first if needed).
+    public func pageTextSource(_ index: Int) async -> TextSource {
+        await onQueue {
+            _ = self.textOnQueue(index)
+            return self.sourceCache[index] ?? .none
+        }
+    }
+
+    /// Whether the page looks like a table (many rows of figures), from its text.
+    public func isTableHeavy(_ index: Int) async -> Bool {
+        TableDetector.isTableHeavy(await pageText(index))
+    }
+
     /// Texts of every page, extracting whatever is not cached yet.
     func allPageTexts() async -> [String] {
-        await onQueue { (0..<self.pageCount).map { self.textOnQueue($0) } }
+        await onQueue {
+            self.extractOnQueue(Array(0..<self.pageCount))
+            return (0..<self.pageCount).map { self.textOnQueue($0) }
+        }
+    }
+
+    /// The page's text exactly as PDFKit returns it (`PDFPage.string`, no normalization, no OCR), so
+    /// ranges in it are valid for the UI document's `page.selection(for:)`.
+    func rawPageString(_ index: Int) async -> String {
+        await onQueue {
+            guard index >= 0, index < self.pageCount, let page = self.worker.page(at: index) else { return "" }
+            return page.string ?? ""
+        }
     }
 
     private func textOnQueue(_ index: Int) -> String {
-        if let cached = textCache[index] { return cached }
-        guard index >= 0, index < pageCount, let page = worker.page(at: index) else { return "" }
-        let text = Self.normalize(page.string ?? "")
-        textCache[index] = text
-        return text
+        guard index >= 0, index < pageCount else { return "" }
+        if textCache[index] == nil { extractOnQueue([index]) }
+        return textCache[index] ?? ""
+    }
+
+    /// Fills the caches for `indexes`; pages that need OCR are rendered a few at a time here (PDFKit
+    /// isn't thread-safe) and recognized in parallel.
+    private func extractOnQueue(_ indexes: [Int]) {
+        var scanned: [(index: Int, pdfText: String)] = []
+        for index in indexes where textCache[index] == nil && index >= 0 && index < pageCount {
+            let text = worker.page(at: index).map { Self.normalize($0.string ?? "") } ?? ""
+            if Self.nonSpaceCount(text) < Self.ocrTextThreshold, !worker.isLocked {
+                if let cached = readOCRCache(index) { store(index, pdfText: text, ocrText: cached) } else { scanned.append((index, text)) }
+            } else {
+                store(index, pdfText: text, ocrText: nil)
+            }
+        }
+        var start = 0
+        while start < scanned.count {
+            let batch = Array(scanned[start..<min(start + Self.ocrBatch, scanned.count)])
+            start += batch.count
+            let images = batch.map { item in worker.page(at: item.index).flatMap { Self.render($0, longEdge: Self.ocrLongEdge) } }
+            var results = [String](repeating: "", count: batch.count)
+            results.withUnsafeMutableBufferPointer { buffer in
+                let out = buffer
+                DispatchQueue.concurrentPerform(iterations: batch.count) { i in
+                    guard let image = images[i], PageOCR.hasVisibleContent(image) else { return }
+                    out[i] = Self.normalize(PageOCR.recognize(image))
+                }
+            }
+            for (i, item) in batch.enumerated() {
+                if images[i] != nil { writeOCRCache(item.index, results[i]) }
+                store(item.index, pdfText: item.pdfText, ocrText: results[i])
+            }
+        }
+    }
+
+    private func store(_ index: Int, pdfText: String, ocrText: String?) {
+        if let ocrText, Self.nonSpaceCount(ocrText) > Self.nonSpaceCount(pdfText) {
+            textCache[index] = ocrText
+            sourceCache[index] = .ocr
+        } else {
+            textCache[index] = pdfText
+            sourceCache[index] = pdfText.isEmpty ? TextSource.none : .pdfText
+        }
+    }
+
+    private func ocrCacheURL(_ index: Int) -> URL {
+        AppPaths.cache.appendingPathComponent(contentHash, isDirectory: true)
+            .appendingPathComponent("ocr", isDirectory: true)
+            .appendingPathComponent("v1-page-\(index + 1).txt")
+    }
+
+    private func readOCRCache(_ index: Int) -> String? {
+        try? String(contentsOf: ocrCacheURL(index), encoding: .utf8)
+    }
+
+    private func writeOCRCache(_ index: Int, _ text: String) {
+        let url = ocrCacheURL(index)
+        AppPaths.ensure(url.deletingLastPathComponent())
+        try? text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    static func nonSpaceCount(_ text: String) -> Int {
+        text.unicodeScalars.reduce(0) { $0 + (CharacterSet.whitespacesAndNewlines.contains($1) ? 0 : 1) }
     }
 
     static func normalize(_ raw: String) -> String {
@@ -179,6 +280,7 @@ public final class ReaderDocument: @unchecked Sendable {
         guard topK > 0 else { return [] }
         return await onQueue {
             if self.searchIndex == nil {
+                self.extractOnQueue(Array(0..<self.pageCount))
                 let texts = (0..<self.pageCount).map { self.textOnQueue($0) }
                 self.searchIndex = PageSearchIndex(pageTexts: texts)
             }

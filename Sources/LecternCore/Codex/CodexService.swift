@@ -554,6 +554,111 @@ public final class CodexService: ProviderService {
                            fastTierId: fastTier, isDefault: m.bool("isDefault") == true)
     }
 
+    // MARK: One-shot
+
+    /// A throwaway question on an ephemeral thread (conversation titles): the catalog's lightest
+    /// model, effort low, standard tier, read-only, no approvals. nil when signed out, when the
+    /// purchased-credits guard would hold a question (quota unknown or included usage used up), or
+    /// on any failure or timeout. It never spends purchased credits and never marks the login expired.
+    public func oneShot(prompt: String, timeout: TimeInterval = 20) async -> String? {
+        guard installIssue == nil, await preflight() == nil else { return nil }
+        if creditsCheck() == .needsRefresh { await refreshQuota() }
+        switch creditsCheck() {
+        case .available, .notApplicable: break
+        case .exhausted, .needsRefresh: return nil
+        }
+        if models.isEmpty { await loadModels() }
+        guard let option = Self.oneShotModel(in: models) else { return nil }
+        let effort = option.efforts.isEmpty || option.efforts.contains("low") ? "low" : option.efforts[0]
+        let threadId: String
+        do {
+            let result = try await server.request("thread/start", [
+                "model": option.id, "serviceTier": "default", "cwd": workingDirectory().path,
+                "sandbox": "read-only", "approvalPolicy": "never", "ephemeral": true,
+            ], timeout: timeout)
+            guard let id = result.obj("thread")?.str("id") else { return nil }
+            threadId = id
+        } catch {
+            return nil
+        }
+        let generation = server.generation
+        let turn = OneShotTurn()
+        let text: String? = await withCheckedContinuation { continuation in
+            turn.continuation = continuation
+            turn.listener = server.addThreadListener(threadId) { [weak turn] method, params in turn?.handle(method, params) }
+            turn.exitListener = server.addExitListener { [weak turn] _ in turn?.finish(nil) }
+            turn.timer = Task { [weak self, weak turn] in
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                guard !Task.isCancelled, let turn else { return }
+                if let turnId = turn.turnId { self?.server.post("turn/interrupt", ["threadId": threadId, "turnId": turnId]) }
+                turn.finish(nil)
+            }
+            Task {
+                do {
+                    let result = try await self.server.request("turn/start", [
+                        "threadId": threadId, "input": [["type": "text", "text": prompt, "text_elements": [Any]()]],
+                        "model": option.id, "effort": effort, "serviceTier": "default",
+                    ], timeout: timeout)
+                    if turn.turnId == nil { turn.turnId = result.obj("turn")?.str("id") }
+                } catch {
+                    turn.finish(nil)
+                }
+            }
+        }
+        turn.timer?.cancel()
+        if let token = turn.listener { server.removeThreadListener(threadId, token) }
+        if let token = turn.exitListener { server.removeListener(token) }
+        if server.generation == generation { server.post("thread/unsubscribe", ["threadId": threadId]) }
+        guard let clean = text.map({ ReaderPrompt.stripDirectives($0).trimmingCharacters(in: .whitespacesAndNewlines) }),
+              !clean.isEmpty else { return nil }
+        return clean
+    }
+
+    /// The catalog's lightest model for one-shot chores: the first "luna" or "mini" model, else the default.
+    public static func oneShotModel(in models: [ModelOption]) -> ModelOption? {
+        models.first { m in
+            let name = "\(m.id) \(m.displayName)".lowercased()
+            return name.contains("luna") || name.contains("mini")
+        } ?? models.first { $0.isDefault } ?? models.first
+    }
+
+    /// One `oneShot` turn; every callback runs on the main actor.
+    @MainActor private final class OneShotTurn {
+        var continuation: CheckedContinuation<String?, Never>?
+        var listener: UUID?
+        var exitListener: UUID?
+        var timer: Task<Void, Never>?
+        var turnId: String?
+        private var messages: [String] = []
+
+        func handle(_ method: String, _ params: JSONObject) {
+            switch method {
+            case "turn/started":
+                if turnId == nil { turnId = params.obj("turn")?.str("id") }
+            case "item/completed":
+                if let item = params.obj("item"), item.str("type") == "agentMessage", let text = item.str("text") {
+                    messages.append(text)
+                }
+            case "turn/completed":
+                let info = params.obj("turn") ?? [:]
+                guard info.str("status") == "completed" else { return finish(nil) }
+                var text = messages.joined(separator: "\n\n")
+                if text.isEmpty {
+                    text = info.objs("items").filter { $0.str("type") == "agentMessage" }
+                        .compactMap { $0.str("text") }.joined(separator: "\n\n")
+                }
+                finish(text)
+            default:
+                break
+            }
+        }
+
+        func finish(_ text: String?) {
+            continuation?.resume(returning: text)
+            continuation = nil
+        }
+    }
+
     // MARK: Session support
 
     struct TurnConfig: Equatable {

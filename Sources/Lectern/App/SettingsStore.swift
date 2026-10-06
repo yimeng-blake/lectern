@@ -17,6 +17,7 @@ final class SettingsStore {
         static let lastProvider = "lastProvider"
         static let appearance = "appearance"
         static let darkPages = "darkPages"
+        static let aiConversationTitles = "aiConversationTitles"
     }
 
     @ObservationIgnored private let defaults: UserDefaults
@@ -74,6 +75,12 @@ final class SettingsStore {
         }
     }
 
+    /// Name each conversation with a short model title after its first answer (else the question's
+    /// first words). ChatGPT titles never spend purchased credits.
+    var aiConversationTitles: Bool {
+        didSet { defaults.set(aiConversationTitles, forKey: Key.aiConversationTitles) }
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         var turns: [Provider: TurnSettings] = [:]
@@ -94,6 +101,7 @@ final class SettingsStore {
         lastProvider = defaults.string(forKey: Key.lastProvider).flatMap(Provider.init(rawValue:)) ?? .claude
         appearance = defaults.string(forKey: Key.appearance).flatMap(AppAppearance.init(rawValue:)) ?? .system
         darkPages = defaults.bool(forKey: Key.darkPages)
+        aiConversationTitles = defaults.object(forKey: Key.aiConversationTitles) as? Bool ?? true
     }
 
     /// Called at launch and on every change; every window, including Settings, follows NSApp.

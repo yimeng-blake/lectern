@@ -4,18 +4,18 @@ import Observation
 import SwiftUI
 
 /// Root of a reader window (hosted by ReaderWindowController, which owns the window and its title).
-/// The document and its ChatModel are created once, on first appearance, because SwiftUI may re-run a
-/// view's init many times. The window shuts the model down when it closes.
+/// The document and its ConversationStack are created once, on first appearance, because SwiftUI may
+/// re-run a view's init many times. The window shuts the conversations down when it closes.
 struct DocumentWindow: View {
     /// The file's bytes, read once (read-only) by ReaderWindowManager.
     let data: Data
     let fileURL: URL
     /// The window's viewer controller (owned by ReaderWindowController, which attaches the document).
     let reader: ReaderController
-    /// Receives the ChatModel as soon as it exists, so the window can shut it down on close.
-    let onModelReady: @MainActor (ChatModel) -> Void
+    /// Receives the conversations as soon as they exist, so the window can shut them down on close.
+    let onConversationsReady: @MainActor (ConversationStack) -> Void
 
-    @State private var model: ChatModel?
+    @State private var stack: ConversationStack?
     @State private var loadFailed = false
     /// An encrypted PDF waiting for its password.
     @State private var locked: ReaderDocument?
@@ -23,8 +23,8 @@ struct DocumentWindow: View {
     @State private var wrongPassword = false
 
     var body: some View {
-        if let model {
-            DocumentSplitView(model: model, reader: reader)
+        if let stack {
+            DocumentSplitView(stack: stack, reader: reader)
         } else if let locked {
             unlockView(locked)
         } else if loadFailed {
@@ -43,7 +43,7 @@ struct DocumentWindow: View {
     }
 
     private func load() {
-        guard model == nil, !loadFailed else { return }
+        guard stack == nil, !loadFailed else { return }
         guard let document = ReaderDocument(data: data, fileURL: fileURL, title: Self.title(for: fileURL)) else {
             loadFailed = true
             return
@@ -54,13 +54,17 @@ struct DocumentWindow: View {
             locked = document
             return
         }
-        makeModel(document)
+        makeConversations(document)
     }
 
-    private func makeModel(_ document: ReaderDocument) {
-        let created = ChatModel(document: document, services: AppServices.shared)
-        model = created
-        onModelReady(created)
+    private func makeConversations(_ document: ReaderDocument) {
+        let created = ConversationStack(document: document, services: AppServices.shared)
+        // The PDF's context menu and Edit > Ask Lectern send the selection to the focused conversation.
+        reader.onAsk = { [weak created] action, text, pages in
+            created?.ask(action, selection: text, pages: pages)
+        }
+        stack = created
+        onConversationsReady(created)
     }
 
     private func unlockView(_ document: ReaderDocument) -> some View {
@@ -96,7 +100,7 @@ struct DocumentWindow: View {
             }
             password = ""
             locked = nil
-            makeModel(document)
+            makeConversations(document)
         }
     }
 
@@ -106,13 +110,13 @@ struct DocumentWindow: View {
     }
 }
 
-/// Sidebar | PDF | chat. The toolbar is the window's own (ReaderToolbar).
+/// Sidebar | PDF | conversations. The toolbar is the window's own (ReaderToolbar).
 private struct DocumentSplitView: View {
-    let model: ChatModel
+    let stack: ConversationStack
     let reader: ReaderController
 
     var body: some View {
-        ReaderSplitView(model: model, reader: reader)
+        ReaderSplitView(stack: stack, reader: reader)
             // The window's minimum: every pane at its minimum width (ReaderSplitViewController).
             .frame(minWidth: ReaderSplitViewController.minimumWidth, maxWidth: .infinity,
                    minHeight: 360, maxHeight: .infinity)
@@ -120,26 +124,26 @@ private struct DocumentSplitView: View {
 }
 
 private struct ReaderSplitView: NSViewControllerRepresentable {
-    let model: ChatModel
+    let stack: ConversationStack
     let reader: ReaderController
 
     func makeNSViewController(context: Context) -> ReaderSplitViewController {
-        ReaderSplitViewController(model: model, reader: reader)
+        ReaderSplitViewController(stack: stack, reader: reader)
     }
 
     func updateNSViewController(_ controller: ReaderSplitViewController, context: Context) {}
 }
 
-/// The PDF pane's SwiftUI side: PDFReaderView with the ChatModel's bindings.
+/// The PDF pane's SwiftUI side: PDFReaderView with the conversations' shared bindings.
 private struct PDFPane: View {
-    @Bindable var model: ChatModel
+    @Bindable var stack: ConversationStack
     let reader: ReaderController
 
     var body: some View {
-        PDFReaderView(document: model.document,
+        PDFReaderView(document: stack.document,
                       controller: reader,
-                      readingState: $model.readingState,
-                      goToPageRequest: $model.goToPageRequest)
+                      readingState: $stack.readingState,
+                      passageRequest: $stack.passageRequest)
     }
 }
 
@@ -147,6 +151,7 @@ private struct PDFPane: View {
 /// (the sidebar opened at 140 or 261 pt instead of 180) and rebuilt a hidden pane (the chat's web view
 /// reloaded every time it was shown). Here hiding collapses a pane and keeps its views; the PDF pane
 /// takes up window resizing; dragging a divider closed hides the sidebar or chat like the menu does.
+/// The chat pane is the window's conversations, stacked top to bottom (ConversationColumnController).
 @MainActor
 final class ReaderSplitViewController: NSSplitViewController {
     static let sidebarRange: ClosedRange<CGFloat> = 140...320
@@ -162,14 +167,13 @@ final class ReaderSplitViewController: NSSplitViewController {
     private var placedDividers = false
     private var syncing = false
 
-    init(model: ChatModel, reader: ReaderController) {
+    init(stack: ConversationStack, reader: ReaderController) {
         self.reader = reader
         let sidebar = NSHostingController(rootView: ReaderSidebar(controller: reader))
-        let pdf = NSHostingController(rootView: PDFPane(model: model, reader: reader))
-        let chat = NSHostingController(rootView: ChatPaneView(model: model))
+        let pdf = NSHostingController(rootView: PDFPane(stack: stack, reader: reader))
+        let chat = ConversationColumnController(stack: stack)
         Self.configure(sidebar)
         Self.configure(pdf)
-        Self.configure(chat)
 
         sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
         sidebarItem.minimumThickness = Self.sidebarRange.lowerBound

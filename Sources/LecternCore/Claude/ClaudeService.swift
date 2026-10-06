@@ -123,6 +123,26 @@ public final class ClaudeService: ProviderService {
         return false
     }
 
+    /// One-shot question with no tools and no saved session (conversation titles): the result text,
+    /// or nil on an error, a timeout or a failed login. It never marks the login expired; a real
+    /// turn reports that.
+    public func oneShot(prompt: String, model: String, timeout: TimeInterval = 20) async -> String? {
+        guard let bin = currentBinary() else { return nil }
+        let r = await ProcessRunner.run(bin, Self.oneShotArguments(prompt: prompt, model: model),
+                                        environment: CleanEnvironment.make(), currentDirectory: AppPaths.claudeCwd,
+                                        timeout: timeout)
+        guard !r.timedOut, let result = ClaudeProtocol.oneShotResult(r.stdout), result.bool("is_error") == false,
+              let text = result.str("result")?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty
+        else { return nil }
+        return text
+    }
+
+    static func oneShotArguments(prompt: String, model: String) -> [String] {
+        var args = ["-p", prompt]
+        if !model.isEmpty { args += ["--model", model] }
+        return args + ["--tools", "", "--safe-mode", "--no-session-persistence", "--output-format", "json"]
+    }
+
     func updateQuota(_ snapshot: QuotaSnapshot) {
         quota = snapshot
     }

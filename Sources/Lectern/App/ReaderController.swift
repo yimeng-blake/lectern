@@ -2,17 +2,20 @@ import AppKit
 import LecternCore
 import Observation
 import PDFKit
+import UniformTypeIdentifiers
 
 /// The viewer side of one reader window: owns the PDFView and the sidebar's PDFThumbnailView, and
 /// exposes page, zoom, display-mode, sidebar, history and find state plus the actions behind the
 /// toolbar and the View / Go / Find menus (routed here by ReaderWindowManager for the key window).
 ///
-/// Read-only by construction: nothing here writes to the PDF. Search hits are shown with
-/// `highlightedSelections` and never become `currentSelection` (which the chat reads as "selection").
+/// Nothing here writes to the PDF file. Highlights are in-memory annotations on the UI document (never
+/// saved; HighlightStore keeps them in Lectern's own storage), and the AI's page images come from
+/// ReaderDocument's separate extraction copy, so they never show them. Search hits and citation
+/// flashes never become `currentSelection` (which the chat reads as "selection").
 @MainActor @Observable
 final class ReaderController {
     enum SidebarMode: String {
-        case thumbnails, contents, searchResults
+        case thumbnails, contents, searchResults, highlights
     }
 
     enum ZoomMode: String {
@@ -144,6 +147,16 @@ final class ReaderController {
     private(set) var currentMatchIndex: Int?
     var isSearching: Bool { searchStatus != .idle }
 
+    /// The PDF has a text selection (for the Ask Lectern / Highlight menu items).
+    private(set) var hasTextSelection = false
+    /// The document's highlights (shared with other windows on the same bytes).
+    private(set) var highlightStore: HighlightStore?
+    var highlights: [Highlight] { highlightStore?.highlights ?? [] }
+    var hasHighlights: Bool { !(highlightStore?.highlights.isEmpty ?? true) }
+
+    /// Sends a selection question to the chat: (action, selected text, 1-based pages). Set by DocumentWindow.
+    @ObservationIgnored var onAsk: ((SelectionAction, String, [Int]) -> Void)?
+
     var canZoomIn: Bool { isReady && scaleFactor < Self.maxScale - 0.001 }
     var canZoomOut: Bool { isReady && scaleFactor > Self.minScale + 0.001 }
     var canGoToPreviousPage: Bool { isReady && currentPageIndex > 0 }
@@ -207,6 +220,13 @@ final class ReaderController {
     @ObservationIgnored private var pageStrings: [Int: NSString] = [:]
     @ObservationIgnored private var snippets: [Int: SearchSnippet] = [:]
 
+    // Highlights and citation flashes
+    /// Annotations currently drawn for each highlight, with the highlight they were drawn from.
+    @ObservationIgnored private var drawnHighlights: [UUID: (highlight: Highlight, annotations: [PDFAnnotation])] = [:]
+    @ObservationIgnored private var passageTask: Task<Void, Never>?
+    @ObservationIgnored private var flashTask: Task<Void, Never>?
+    @ObservationIgnored private var flashAnnotations: [PDFAnnotation] = []
+
     init() {
         // Before autoScales: setting the scale limits turns autoscaling off (verified).
         pdfView.minScaleFactor = Self.minScale
@@ -222,6 +242,7 @@ final class ReaderController {
             self?.takeInitialFocus()
             self?.applyPendingRestore()
         }
+        pdfView.contextMenuItems = { [weak self] event in self?.contextMenuItems(for: event) ?? [] }
         applyDarkPages()
         darkPagesObserver = NotificationCenter.default.addObserver(
             forName: .lecternDarkPagesChanged, object: nil, queue: .main
@@ -253,6 +274,9 @@ final class ReaderController {
         pdfView.document = pdf
         self.document = document
         observePDFView()
+        highlightStore = HighlightStore.forDocument(contentHash: document.contentHash)
+        syncHighlights()
+        observeHighlights()
 
         if let saved = store.load(contentHash: document.contentHash)?.viewer {
             restore(saved)
@@ -271,6 +295,9 @@ final class ReaderController {
         isClosed = true
         saveTask?.cancel()
         searchDebounceTask?.cancel()
+        passageTask?.cancel()
+        flashTask?.cancel()
+        onAsk = nil
         cancelFind()
         if let finderDelegate, document?.pdf.delegate === finderDelegate { document?.pdf.delegate = nil }
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
@@ -280,6 +307,7 @@ final class ReaderController {
         pdfView.onEscape = nil
         pdfView.onResize = nil
         pdfView.onLayout = nil
+        pdfView.contextMenuItems = nil
     }
 
     private func observePDFView() {
@@ -290,6 +318,15 @@ final class ReaderController {
         observers.append(center.addObserver(forName: .PDFViewDisplayModeChanged, object: pdfView, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.displayModeChangedByView() }
         })
+        observers.append(center.addObserver(forName: .PDFViewSelectionChanged, object: pdfView, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.selectionChanged() }
+        })
+    }
+
+    /// Cheap (no text extraction): runs on every change while dragging.
+    private func selectionChanged() {
+        let has = !(pdfView.currentSelection?.pages.isEmpty ?? true)
+        if hasTextSelection != has { hasTextSelection = has }
     }
 
     // MARK: Current page
@@ -941,11 +978,15 @@ final class ReaderController {
 
     private func scroll(to match: SearchMatch) {
         guard let page = match.selection.pages.first else { return }
-        let bounds = match.selection.bounds(for: page)
-        // Some room above and below so the hit isn't glued to the view's edge.
+        scroll(to: match.selection.bounds(for: page), on: page, index: match.pageIndex)
+    }
+
+    /// Scrolls a rect on a page (page space) into view.
+    private func scroll(to bounds: CGRect, on page: PDFPage, index: Int) {
+        // Some room above and below so the target isn't glued to the view's edge.
         let target = bounds.insetBy(dx: -20, dy: -min(120, pdfView.bounds.height / 4 / max(scaleFactor, 0.1)))
         pdfView.go(to: target, on: page)
-        updateCurrentPage(match.pageIndex)
+        updateCurrentPage(index)
     }
 
     /// "…context **match** context…" around a match (about 60 characters), whitespace collapsed.
@@ -1013,6 +1054,269 @@ final class ReaderController {
 
     static var matchColor: NSColor { NSColor.systemYellow.withAlphaComponent(0.45) }
     static var currentMatchColor: NSColor { NSColor.systemOrange.withAlphaComponent(0.75) }
+
+    // MARK: Ask Lectern
+
+    /// The selected text and its 1-based pages; nil when nothing (or only whitespace) is selected.
+    private func selectedText() -> (text: String, pages: [Int])? {
+        guard let pdf = pdfView.document, let selection = pdfView.currentSelection,
+              let text = selection.string?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty
+        else { return nil }
+        let pages = Set(selection.pages.map { pdf.index(for: $0) }.filter { $0 >= 0 }).map { $0 + 1 }.sorted()
+        return (text, pages)
+    }
+
+    /// Asks the chat about the selection (context menu, Edit > Ask Lectern); shows the chat if hidden.
+    func ask(_ action: SelectionAction) {
+        guard isReady, let onAsk, let selected = selectedText() else {
+            NSSound.beep()
+            return
+        }
+        setChatVisible(true)
+        onAsk(action, selected.text, selected.pages)
+    }
+
+    // MARK: Highlights
+
+    /// Highlights the selection (one highlight per text range) and clears it, as Preview does.
+    func highlightSelection(_ color: HighlightColor = .yellow) {
+        let new = highlightsFromSelection(color: color)
+        guard !new.isEmpty, let store = highlightStore else {
+            NSSound.beep()
+            return
+        }
+        store.add(new)
+        pdfView.clearSelection()
+    }
+
+    /// Asks for a note, then highlights the selection (yellow) with it.
+    func addNoteToSelection() {
+        let new = highlightsFromSelection(color: .yellow)
+        guard !new.isEmpty, let store = highlightStore else {
+            NSSound.beep()
+            return
+        }
+        NoteEditor.edit(nil, quote: new.map(\.text).joined(separator: " "), in: pdfView.window) { [weak self] note in
+            var annotated = new
+            let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+            annotated[0].note = trimmed.isEmpty ? nil : trimmed
+            store.add(annotated)
+            self?.pdfView.clearSelection()
+        }
+    }
+
+    func editNote(_ id: UUID) {
+        guard let store = highlightStore, let h = store.highlight(id) else { return }
+        NoteEditor.edit(h.note, quote: h.text, in: pdfView.window) { note in store.setNote(note, for: id) }
+    }
+
+    func setHighlightColor(_ color: HighlightColor, for id: UUID) {
+        highlightStore?.setColor(color, for: id)
+    }
+
+    func deleteHighlight(_ id: UUID) {
+        highlightStore?.remove(id)
+    }
+
+    /// Scrolls to a highlight (Highlights sidebar), recorded for Back like the other jumps.
+    func showHighlight(_ id: UUID) {
+        guard isReady, let h = highlightStore?.highlight(id), let page = pdfView.document?.page(at: h.page) else { return }
+        if h.page != currentPageIndex { recordJump() }
+        if let range = validRange(h, on: page), let selection = page.selection(for: range) {
+            scroll(to: selection.bounds(for: page), on: page, index: h.page)
+        } else {
+            pdfView.go(to: page)
+            updateCurrentPage(h.page)
+        }
+        scheduleSave()
+    }
+
+    /// File > Export Highlights…: Markdown to a file the user picks (never the PDF).
+    func exportHighlights() {
+        guard let document, hasHighlights, let window = pdfView.window else {
+            NSSound.beep()
+            return
+        }
+        let markdown = HighlightStore.markdown(highlights, title: document.title)
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(document.title) Highlights.md"
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        panel.canCreateDirectories = true
+        panel.beginSheetModal(for: window) { response in
+            guard response == .OK, let url = panel.url else { return }
+            if let pdfURL = document.fileURL,
+               ReaderWindowManager.canonical(url).path == ReaderWindowManager.canonical(pdfURL).path {
+                NSSound.beep()
+                return
+            }
+            do {
+                try Data(markdown.utf8).write(to: url, options: .atomic)
+            } catch {
+                NSAlert(error: error).beginSheetModal(for: window)
+            }
+        }
+    }
+
+    private func highlightsFromSelection(color: HighlightColor) -> [Highlight] {
+        guard isReady, let pdf = pdfView.document, let selection = pdfView.currentSelection else { return [] }
+        var out: [Highlight] = []
+        for page in selection.pages {
+            let index = pdf.index(for: page)
+            guard index >= 0 else { continue }
+            let text = (page.string ?? "") as NSString
+            for i in 0..<selection.numberOfTextRanges(on: page) {
+                let range = selection.range(at: i, on: page)
+                guard range.location != NSNotFound, range.length > 0, NSMaxRange(range) <= text.length else { continue }
+                let quote = text.substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !quote.isEmpty { out.append(Highlight(page: index, range: range, text: quote, color: color)) }
+            }
+        }
+        return out
+    }
+
+    /// The highlight's saved range, or where its text is on the page if the range no longer holds it.
+    private func validRange(_ h: Highlight, on page: PDFPage) -> NSRange? {
+        let text = (page.string ?? "") as NSString
+        if h.length > 0, NSMaxRange(h.range) <= text.length,
+           text.substring(with: h.range).trimmingCharacters(in: .whitespacesAndNewlines) == h.text {
+            return h.range
+        }
+        let found = text.range(of: h.text)
+        return found.location == NSNotFound ? nil : found
+    }
+
+    /// Redraws after every store change (from this window or another one on the same bytes).
+    private func observeHighlights() {
+        guard let store = highlightStore else { return }
+        withObservationTracking {
+            _ = store.highlights
+        } onChange: { [weak self] in
+            DispatchQueue.main.async {
+                guard let self, !self.isClosed else { return }
+                self.syncHighlights()
+                self.observeHighlights()
+            }
+        }
+    }
+
+    /// Draws each highlight as in-memory `.highlight` annotations (one per line) on the UI document.
+    func syncHighlights() {
+        guard let pdf = pdfView.document else { return }
+        let current = Dictionary(highlights.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for (id, drawn) in drawnHighlights where current[id] != drawn.highlight {
+            for annotation in drawn.annotations { annotation.page?.removeAnnotation(annotation) }
+            drawnHighlights[id] = nil
+        }
+        for h in highlights where drawnHighlights[h.id] == nil {
+            guard let page = pdf.page(at: h.page), let range = validRange(h, on: page),
+                  let selection = page.selection(for: range) else { continue }
+            let annotations = Self.lineAnnotations(selection, on: page, color: h.color.color, contents: h.note)
+            for annotation in annotations { page.addAnnotation(annotation) }
+            drawnHighlights[h.id] = (h, annotations)
+        }
+    }
+
+    /// One annotation per line of `selection` on `page`.
+    static func lineAnnotations(_ selection: PDFSelection, on page: PDFPage, color: NSColor,
+                                contents: String?) -> [PDFAnnotation] {
+        selection.selectionsByLine().compactMap { line in
+            let bounds = line.bounds(for: page)
+            guard bounds.width > 0.5, bounds.height > 0.5 else { return nil }
+            let annotation = PDFAnnotation(bounds: bounds, forType: .highlight, withProperties: nil)
+            annotation.color = color
+            annotation.contents = contents
+            return annotation
+        }
+    }
+
+    private func highlightID(at event: NSEvent) -> UUID? {
+        let point = pdfView.convert(event.locationInWindow, from: nil)
+        guard let page = pdfView.page(for: point, nearest: false) else { return nil }
+        let onPage = pdfView.convert(point, to: page)
+        return drawnHighlights.first { entry in
+            entry.value.annotations.contains { $0.page === page && $0.bounds.contains(onPage) }
+        }?.key
+    }
+
+    /// Put above PDFView's own context menu: Ask Lectern / Highlight / Add Note… for selected text, or
+    /// note, color and removal for a highlight under the pointer.
+    private func contextMenuItems(for event: NSEvent) -> [NSMenuItem] {
+        guard isReady else { return [] }
+        if hasTextSelection, selectedText() != nil {
+            let ask = NSMenuItem(title: "Ask Lectern", action: nil, keyEquivalent: "")
+            ask.image = LecternMark.menuImage
+            ask.submenu = NSMenu(title: "Ask Lectern")
+            for action in SelectionAction.allCases {
+                ask.submenu?.addItem(ActionMenuItem(action.title) { [weak self] in self?.ask(action) })
+            }
+            let highlight = NSMenuItem(title: "Highlight", action: nil, keyEquivalent: "")
+            highlight.submenu = colorMenu("Highlight", current: nil) { [weak self] in self?.highlightSelection($0) }
+            return [ask, highlight, ActionMenuItem("Add Note\u{2026}") { [weak self] in self?.addNoteToSelection() }]
+        }
+        if let id = highlightID(at: event), let h = highlightStore?.highlight(id) {
+            let color = NSMenuItem(title: "Change Color", action: nil, keyEquivalent: "")
+            color.submenu = colorMenu("Change Color", current: h.color) { [weak self] in self?.setHighlightColor($0, for: id) }
+            return [ActionMenuItem(h.note == nil ? "Add Note\u{2026}" : "Edit Note\u{2026}") { [weak self] in self?.editNote(id) },
+                    color,
+                    ActionMenuItem("Remove Highlight") { [weak self] in self?.deleteHighlight(id) }]
+        }
+        return []
+    }
+
+    private func colorMenu(_ title: String, current: HighlightColor?, choose: @escaping (HighlightColor) -> Void) -> NSMenu {
+        let menu = NSMenu(title: title)
+        for color in HighlightColor.allCases {
+            let item = ActionMenuItem(color.title, image: color.swatch) { choose(color) }
+            if color == current { item.state = .on }
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    // MARK: Citation passages
+
+    /// A citation link: go to the page (recorded for Back), then find the claim's supporting passage and
+    /// flash it. The flash is a temporary annotation, never the selection, and is removed after 2.5 s.
+    func showPassage(_ request: PassageRequest) {
+        guard let document, request.page >= 0, request.page < pageCount else { return }
+        passageTask?.cancel()
+        clearFlash()
+        goToPage(request.page)
+        guard let claim = request.claim?.trimmingCharacters(in: .whitespacesAndNewlines), !claim.isEmpty else { return }
+        let index = request.page
+        passageTask = Task { @MainActor [weak self] in
+            let range = await PassageLocator.locate(claim: claim, page: index, in: document)
+            guard let self, let range, !Task.isCancelled, !self.isClosed else { return }
+            self.flashPassage(range, page: index)
+        }
+    }
+
+    private func flashPassage(_ range: NSRange, page index: Int) {
+        guard let page = pdfView.document?.page(at: index), range.location != NSNotFound, range.length > 0,
+              NSMaxRange(range) <= ((page.string ?? "") as NSString).length,
+              let selection = page.selection(for: range) else { return }
+        let bounds = selection.bounds(for: page)
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        clearFlash()
+        scroll(to: bounds, on: page, index: index)
+        flashAnnotations = Self.lineAnnotations(selection, on: page, color: Self.passageColor, contents: nil)
+        for annotation in flashAnnotations { page.addAnnotation(annotation) }
+        flashTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2.5))
+            guard !Task.isCancelled else { return }
+            self?.clearFlash()
+        }
+    }
+
+    private func clearFlash() {
+        flashTask?.cancel()
+        flashTask = nil
+        for annotation in flashAnnotations { annotation.page?.removeAnnotation(annotation) }
+        flashAnnotations = []
+    }
+
+    /// Orange: distinct from every highlight color.
+    static var passageColor: NSColor { NSColor(srgbRed: 1.0, green: 0.55, blue: 0.15, alpha: 1) }
 
     // MARK: Persistence
 
@@ -1114,11 +1418,23 @@ final class ReaderController {
     }
 }
 
-/// PDFView with hooks for Esc, resizing and layout.
+/// PDFView with hooks for Esc, resizing, layout and the context menu.
 final class ReaderPDFView: PDFView {
     var onEscape: (() -> Bool)?
     var onResize: (() -> Void)?
     var onLayout: (() -> Void)?
+    /// Items put at the top of the context menu (selection and highlight actions).
+    var contextMenuItems: ((NSEvent) -> [NSMenuItem])?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event)
+        guard let items = contextMenuItems?(event), !items.isEmpty else { return menu }
+        let result = menu ?? NSMenu()
+        for (i, item) in (items + (result.items.isEmpty ? [] : [.separator()])).enumerated() {
+            result.insertItem(item, at: i)
+        }
+        return result
+    }
 
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53, event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,

@@ -75,7 +75,8 @@ public final class ContextBuilder: @unchecked Sendable {
     public static let selectionCharLimit = 4_000
     /// A selection spanning more pages than this (Select All, a long drag) only adds its first and last pages.
     static let selectionPageLimit = 5
-    /// A current page with less extractable text than this gets its image attached automatically.
+    /// A current page with less extractable text than this gets its image attached automatically (as do
+    /// scanned and table-heavy pages).
     public static let sparseTextThreshold = 400
     /// Rough per-image cost (a ~1600 px page is about 1.2–1.6k tokens for both backends).
     static let imageTokenAllowance = 1_600
@@ -181,24 +182,33 @@ public final class ContextBuilder: @unchecked Sendable {
 
         let included = Array(pages).sorted()
 
-        // Page image: on request, or automatically when the current page has little text (scans,
-        // slides, charts). The automatic one is sent once per conversation.
+        // Page image: on request, or automatically (once per conversation) when the current page has
+        // little text (slides, charts), is a scan (its text came from OCR) or is mostly a table (PDF text
+        // flattens the columns).
         var images: [URL] = []
         var newImagePages: [Int] = []
         var imageLine: String?
         if pageCount > 0 {
             let currentText = await document.pageText(current)
-            let sparse = currentText.count < Self.sparseTextThreshold
+            let autoReason: String?
+            if await document.pageTextSource(current) == .ocr {
+                autoReason = "scanned page; its text was recognized by OCR"
+            } else if await document.isTableHeavy(current) {
+                autoReason = "table; its extracted text loses the columns"
+            } else if currentText.count < Self.sparseTextThreshold {
+                autoReason = "it has little extractable text"
+            } else {
+                autoReason = nil
+            }
             let label = "page \(current + 1)"
-            if options.attachPageImage || (sparse && !imagesAlreadySent.contains(current)) {
+            if options.attachPageImage || (autoReason != nil && !imagesAlreadySent.contains(current)) {
                 if let url = await document.renderPagePNG(current) {
                     images.append(url)
                     newImagePages.append(current)
-                    imageLine = sparse && !options.attachPageImage
-                        ? "page image: \(label) is attached as an image (it has little extractable text)"
-                        : "page image: \(label) is attached as an image"
+                    imageLine = "page image: \(label) is attached as an image"
+                        + (autoReason.map { options.attachPageImage ? "" : " (\($0))" } ?? "")
                 }
-            } else if sparse {
+            } else if autoReason != nil {
                 imageLine = "page image: the image of \(label) was provided earlier"
             }
         }
@@ -249,10 +259,11 @@ public final class ContextBuilder: @unchecked Sendable {
                 pageBlocks.append("=== Page \(page + 1) ===\n(page \(page + 1) was provided earlier)")
             } else {
                 let text = await document.pageText(page)
+                let ocr = await document.pageTextSource(page) == .ocr
                 let body = text.isEmpty
                     ? (newImagePages.contains(page) ? "(no extractable text on this page; see the attached image)"
                                                     : "(no extractable text on this page)")
-                    : Self.sanitize(text)
+                    : (ocr ? "(text recognized by OCR)\n" : "") + Self.sanitize(text)
                 pageBlocks.append("=== Page \(page + 1) ===\n\(body)")
                 newPages.append(page)
             }

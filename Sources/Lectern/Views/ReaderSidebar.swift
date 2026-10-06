@@ -2,7 +2,7 @@ import AppKit
 import PDFKit
 import SwiftUI
 
-/// The reader's left sidebar: page thumbnails, the table of contents, or search results.
+/// The reader's left sidebar: page thumbnails, the table of contents, highlights, or search results.
 struct ReaderSidebar: View {
     let controller: ReaderController
 
@@ -30,12 +30,14 @@ struct ReaderSidebar: View {
                 OutlineSidebar(controller: controller)
             case .searchResults:
                 SearchResultsSidebar(controller: controller)
+            case .highlights:
+                HighlightsSidebar(controller: controller)
             }
         }
     }
 }
 
-/// Thumbnails / Contents (when the PDF has an outline) / Search results (while searching).
+/// Thumbnails / Contents (when the PDF has an outline) / Highlights / Search results (while searching).
 private struct SidebarModePicker: View {
     let controller: ReaderController
 
@@ -54,6 +56,10 @@ private struct SidebarModePicker: View {
                     .accessibilityLabel("Table of Contents")
                     .tag(ReaderController.SidebarMode.contents)
             }
+            Image(systemName: "highlighter")
+                .help("Highlights (\u{2325}\u{2318}4)")
+                .accessibilityLabel("Highlights")
+                .tag(ReaderController.SidebarMode.highlights)
             if controller.isSearching {
                 Image(systemName: "magnifyingglass")
                     .help("Search Results")
@@ -171,6 +177,79 @@ private struct OutlineRow: View {
         .buttonStyle(.plain)
         .disabled(node.pageIndex == nil)
         .help(node.title)
+    }
+}
+
+// MARK: Highlights
+
+/// The document's highlights in page order; click → go to it. Row menu: note, color, delete.
+private struct HighlightsSidebar: View {
+    let controller: ReaderController
+
+    var body: some View {
+        let highlights = controller.highlights
+        if highlights.isEmpty {
+            ContentUnavailableView("No Highlights", systemImage: "highlighter",
+                                   description: Text("Select text in the PDF and choose Highlight from its context menu."))
+        } else {
+            List(highlights) { h in
+                HighlightRow(highlight: h, pageLabel: controller.pageLabel(for: h.page)) {
+                    controller.showHighlight(h.id)
+                }
+                .contextMenu {
+                    Button(h.note == nil ? "Add Note\u{2026}" : "Edit Note\u{2026}") { controller.editNote(h.id) }
+                    Menu("Change Color") {
+                        ForEach(HighlightColor.allCases) { color in
+                            Toggle(isOn: Binding(get: { h.color == color },
+                                                 set: { _ in controller.setHighlightColor(color, for: h.id) })) {
+                                Label { Text(color.title) } icon: { Image(nsImage: color.swatch) }
+                            }
+                        }
+                    }
+                    Divider()
+                    Button("Delete", role: .destructive) { controller.deleteHighlight(h.id) }
+                }
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .accessibilityLabel("Highlights")
+        }
+    }
+}
+
+private struct HighlightRow: View {
+    let highlight: Highlight
+    let pageLabel: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Circle()
+                    .fill(Color(nsColor: highlight.color.color))
+                    .overlay(Circle().strokeBorder(.black.opacity(0.15)))
+                    .frame(width: 9, height: 9)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("p. \(pageLabel)")
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                    Text(highlight.text.split(whereSeparator: \.isWhitespace).joined(separator: " "))
+                        .lineLimit(3)
+                    if let note = highlight.note {
+                        Text(note)
+                            .font(.callout)
+                            .italic()
+                            .foregroundStyle(.secondary)
+                            .lineLimit(3)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Page \(pageLabel): \(highlight.text)\(highlight.note.map { ". Note: \($0)" } ?? "")")
     }
 }
 

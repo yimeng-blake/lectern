@@ -6,8 +6,8 @@ Lectern is a PDF reader for macOS with a chat pane next to the page. In the chat
 about the PDF. Lectern uses your Claude and ChatGPT plans. It sends your questions through the command-line tools
 (CLIs) from Anthropic and OpenAI: Claude Code for Claude and Codex for ChatGPT.
 
-The answers have page citations, for example `[p. 12]`. Each citation is a link to its page. For each PDF, Lectern
-keeps one conversation with each provider.
+The answers have page citations, for example `[p. 12]`. Each citation is a link to its page. For each PDF, you can
+have up to 4 conversations, one above the other. Lectern gives each conversation a short title about its topic.
 
 ## Before you start
 
@@ -140,7 +140,7 @@ For the other controls of the chat pane, refer to [Use the chat pane](docs/GUIDE
 
 ### Use a citation
 
-1. Click a citation in the answer, for example `[p. 12]`. Lectern shows that page.
+1. Click a citation in the answer, for example `[p. 12]`. Lectern shows that page and the passage in orange.
 2. To go to the location before the jump, select **Go > Back** (⌘[).
 
 ### Change the appearance
@@ -155,8 +155,13 @@ The [Lectern guide](docs/GUIDE.md) gives more information about these items:
 
 - [Keyboard shortcuts](docs/GUIDE.md#keyboard-shortcuts)
 - [Settings](docs/GUIDE.md#settings)
-- [Use the viewer](docs/GUIDE.md#use-the-viewer): pages, sidebar, zoom, search, print and appearance
+- [Use the viewer](docs/GUIDE.md#use-the-viewer): pages, sidebar, zoom, search, highlights, print and appearance
 - [Use the chat pane](docs/GUIDE.md#use-the-chat-pane): models, **Fast**, purchased credits and context
+- [Use more than one conversation](docs/GUIDE.md#use-more-than-one-conversation): add, focus, rename, collapse, move
+  and close conversations, and automatic titles
+- [Ask about a selection](docs/GUIDE.md#ask-about-a-selection), [Presets](docs/GUIDE.md#presets),
+  [Citation check badges](docs/GUIDE.md#citation-check-badges), [Save a table as CSV](docs/GUIDE.md#save-a-table-as-csv)
+  and [Scanned PDFs (OCR) and table pages](docs/GUIDE.md#scanned-pdfs-ocr-and-table-pages)
 - [Privacy and usage](docs/GUIDE.md#privacy-and-usage)
 - [Problems and remedies](docs/GUIDE.md#problems-and-remedies)
 - [Install a new version or remove Lectern](docs/GUIDE.md#install-a-new-version-or-remove-lectern)

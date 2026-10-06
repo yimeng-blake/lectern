@@ -5,13 +5,14 @@ import PDFKit
 import SwiftUI
 
 /// The PDF pane. Shows the window's ReaderController's PDFView, reports what the reader is looking at
-/// through `readingState` and navigates when `goToPageRequest` (0-based) is set, clearing it afterwards.
-/// Those jumps (citation links in the chat) are recorded in the controller's Back history.
+/// through `readingState` and, when `passageRequest` is set (a citation link in the chat), has the
+/// controller show that page and flash the cited passage, clearing the request afterwards. Those jumps
+/// are recorded in the controller's Back history.
 struct PDFReaderView: NSViewRepresentable {
     let document: ReaderDocument
     let controller: ReaderController
     @Binding var readingState: ReadingState
-    @Binding var goToPageRequest: Int?      // 0-based
+    @Binding var passageRequest: PassageRequest?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -36,7 +37,7 @@ struct PDFReaderView: NSViewRepresentable {
             view.document = document.pdf
             coordinator.scheduleStateUpdate()
         }
-        coordinator.handleGoToRequest()
+        coordinator.handlePassageRequest()
     }
 
     static func dismantleNSView(_ container: NSView, coordinator: Coordinator) {
@@ -51,8 +52,8 @@ struct PDFReaderView: NSViewRepresentable {
         private var selectionTask: Task<Void, Never>?
         private var stateUpdatePending = false
         private var layoutRetries = 0
-        /// Request already navigated to, waiting for the binding to be cleared.
-        private var handledRequest: Int?
+        /// Request already handled, waiting for the binding to be cleared.
+        private var handledRequest: UUID?
 
         init(_ parent: PDFReaderView) {
             self.parent = parent
@@ -71,7 +72,7 @@ struct PDFReaderView: NSViewRepresentable {
                 self?.observeScrolling()
                 self?.scheduleStateUpdate()
             }
-            observeGoToRequests()
+            observePassageRequests()
         }
 
         func detach() {
@@ -165,35 +166,35 @@ struct PDFReaderView: NSViewRepresentable {
 
         // MARK: Navigation
 
-        func handleGoToRequest() {
-            guard let request = parent.goToPageRequest else {
+        func handlePassageRequest() {
+            guard let request = parent.passageRequest else {
                 handledRequest = nil
                 return
             }
-            guard request != handledRequest else { return }
-            handledRequest = request
-            if let view = pdfView, let doc = view.document, doc.pageCount > 0 {
+            guard request.id != handledRequest else { return }
+            handledRequest = request.id
+            if pdfView != nil {
                 // Through the controller, so Back returns to where the reader was.
-                parent.controller.goToPage(min(max(request, 0), doc.pageCount - 1))
+                parent.controller.showPassage(request)
             }
             // Never write a binding during a SwiftUI update pass.
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                if self.parent.goToPageRequest == request { self.parent.goToPageRequest = nil }
+                if self.parent.passageRequest == request { self.parent.passageRequest = nil }
                 self.handledRequest = nil
             }
         }
 
         /// updateNSView normally sees request changes, but this also catches them when the hosting
         /// view's body doesn't depend on the request.
-        private func observeGoToRequests() {
+        private func observePassageRequests() {
             withObservationTracking {
-                _ = parent.goToPageRequest
+                _ = parent.passageRequest
             } onChange: { [weak self] in
                 DispatchQueue.main.async {
                     guard let self, self.pdfView != nil else { return }
-                    self.handleGoToRequest()
-                    self.observeGoToRequests()
+                    self.handlePassageRequest()
+                    self.observePassageRequests()
                 }
             }
         }

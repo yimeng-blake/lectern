@@ -30,20 +30,26 @@ Sources/LecternCore/Shared/ChatTypes.swift      (fixed) Provider, ModelOption, T
 Sources/LecternCore/Shared/ProcessSupport.swift (fixed) AppPaths, CleanEnvironment, BinaryLocator,
                                                         ManagedProcess, ProcessRunner, JSONLine, dict accessors
 Sources/LecternCore/Shared/ReaderPrompt.swift   (fixed) system prompt, Codex directive stripping
+Sources/LecternCore/Shared/ConversationTitler.swift (titler) fallback + model conversation titles
 Sources/lectern-probe/Probe.swift               (fixed) dispatcher (`@main`; SwiftPM compiles a file named
                                                         main.swift as top-level code, so it can't hold `@main`);
                                                         calls claudeProbeCommands(), codexProbeCommands(),
                                                         contextProbeCommands(), e2eProbeCommands()
 Sources/lectern-probe/ProbeE2E.swift            (integrator) `ask`: ReaderDocument → ContextBuilder → session,
-                                                        with ChatModel's sign-in gate and credits guard
+                                                        with ChatModel's sign-in gate and credits guard;
+                                                        `title`: ConversationTitler end to end (one model call)
 
 Sources/LecternCore/Claude/*                    (Claude agent)  ClaudeService, ClaudeSession, parsing
 Sources/lectern-probe/ProbeClaude.swift         (Claude agent)  func claudeProbeCommands() -> [ProbeCommand]
 Sources/LecternCore/Codex/*                     (Codex agent)   CodexAppServer, CodexService, CodexSession
 Sources/lectern-probe/ProbeCodex.swift          (Codex agent)   func codexProbeCommands() -> [ProbeCommand]
-Sources/LecternCore/Document/*                  (Document agent) ReaderDocument, ContextBuilder
+Sources/LecternCore/Document/*                  (Document agent) ReaderDocument, ContextBuilder, OCR, TableDetector,
+                                                        CitationVerifier, PassageLocator
+Sources/LecternCore/Document/CitationTypes.swift (fixed) CitationCheck
+Sources/Lectern/App/ReadingFeatures.swift       (fixed) SelectionAction, ChatPreset, PassageRequest
 Sources/Lectern/Views/PDFReaderView.swift       (Document agent)
 Sources/lectern-probe/ProbeContext.swift        (Document agent) func contextProbeCommands() -> [ProbeCommand]
+                                                        context-build, pdf-info, verify-citations, locate
 Sources/Lectern/Views/ChatPaneView.swift        (Chat UI agent)
 Sources/Lectern/Views/ChatHeaderView.swift      (Chat UI agent)
 Sources/Lectern/Views/AuthBannerView.swift      (Chat UI agent)
@@ -51,8 +57,11 @@ Sources/Lectern/Views/TranscriptWebView.swift   (Chat UI agent)
 Sources/Lectern/Resources/web/chat.{html,css,js}(Chat UI agent; vendor/ already holds marked + KaTeX)
 Sources/Lectern/App/*                           (App agent) LecternApp (+ AppDelegate, ReaderCommands),
                                                             ReaderWindows (ReaderWindowManager), AppServices,
-                                                            SettingsStore, SessionStore, ChatModel, ChatMessage
+                                                            SettingsStore, SessionStore, ConversationStack,
+                                                            ChatModel, ChatMessage, HighlightStore
 Sources/Lectern/Views/DocumentWindow.swift      (App agent)
+Sources/Lectern/Views/ConversationStackView.swift (App agent) ConversationColumnController, ConversationPanel,
+                                                            title bar, New Conversation bar, ConversationActions
 Sources/Lectern/Views/SettingsView.swift        (App agent)
 scripts/build-app.sh, scripts/package-release.sh, VERSION, README.md   (App agent)
 ```
@@ -78,13 +87,54 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     var errorText: String?      // set when status == .failed
     var pages: [Int]            // 1-based pages sent as context with this user message
     var createdAt: Date
+    var citationChecks: [CitationCheck]?  // assistant answers; nil in older sessions and never written as null
 }
 
-// Sources/Lectern/App/ChatModel.swift — one per document window
-@MainActor @Observable final class ChatModel {
+// Sources/Lectern/App/ConversationStack.swift — one per document window (see "Conversations" below)
+@MainActor @Observable final class ConversationStack {
+    static let maxConversations = 4
     let document: ReaderDocument
-    var readingState: ReadingState          // written by PDFReaderView
-    var goToPageRequest: Int?               // 0-based; PDFReaderView navigates then sets nil
+    var readingState: ReadingState          // written by PDFReaderView; shared by every conversation
+    var passageRequest: PassageRequest?     // PDFReaderView goes to the page (and the claim's passage), then sets nil
+    private(set) var conversations: [ChatModel]   // top to bottom, never empty
+    private(set) var focusedID: UUID?
+    var focused: ChatModel? { get }         // focusedID's conversation, else the first
+    var canAddConversation: Bool { get }    // < maxConversations
+    var canCloseConversation: Bool { get }  // > 1
+    let isSecondaryWindow: Bool
+    init(document:services:settings:sessionStore:secondary:titler:onConversationCreated:)  // restores the saved ones
+    convenience init(document: ReaderDocument, services: AppServices)   // wires ConversationTitler + register
+    @discardableResult func addConversation() -> ChatModel?   // at the bottom, focused, input focus; nil at the limit
+    func closeConversation(_ id: UUID)      // detach (stack = nil), shut down, refocus the next one, save; not the last
+    func canMoveConversation(_ id: UUID, by offset: Int) -> Bool
+    func moveConversation(_ id: UUID, by offset: Int)   // Move Up (-1) / Move Down (+1); saves
+    func focus(_ id: UUID)                  // not saved by itself (the next change saves it)
+    func ask(_ action: SelectionAction, selection: String, pages: [Int])  // Ask Lectern → focused (expanded first)
+    func goTo(page: Int, claim: String? = nil)  // sets passageRequest
+    func shutdown()                         // window closed: every conversation shuts down, one save at the end
+    func persist()                          // all conversations, in order; never from a secondary window
+}
+
+// Sources/Lectern/App/ChatModel.swift — one per conversation (panel)
+@MainActor @Observable final class ChatModel {
+    typealias Titler = @MainActor (_ question: String, _ answer: String, _ provider: Provider) async -> String?
+    init(stack: ConversationStack, stored: StoredConversation? = nil, services: [Provider: ProviderService],
+         settings: SettingsStore, secondary: Bool = false, titler: Titler? = nil)
+    let id: UUID
+    let document: ReaderDocument
+    weak var stack: ConversationStack?      // nil once closed (a late save or context build then does nothing)
+    var readingState: ReadingState { get }  // the stack's
+    private(set) var title: String          // automatic until renamed; StoredConversation.defaultTitle at first
+    private(set) var titleIsCustom: Bool
+    var isCollapsed: Bool                   // saved on change
+    var isFocused: Bool { get }
+    var isAnyBusy: Bool { get }             // a turn runs for either provider
+    var hasUserMessages: Bool { get }
+    var stored: StoredConversation { get }  // what the stack saves
+    func rename(_ title: String)            // trimmed, one line, ≤ 80 chars; empty → back to the automatic title
+    func clearConversation()                // panel menu "New Chat": both providers start over; a custom title stays
+    func takeFocus()                        // stack.focus(id): input focus, a click in the panel, a preset
+    func requestInputFocus()                // new conversation: its input takes the keyboard focus
 
     var provider: Provider                  // switching keeps both conversations
     var settings: TurnSettings              // for `provider`; setter persists as the new default
@@ -113,24 +163,40 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     func recheckAuth()                      // re-reads the login status; never logs in
     func confirmSpendCredits()              // user override for the quota guard; sends the blocked message
     func cancelBlockedSend()                // question goes back into the input, ahead of any new text
-    func goTo(page: Int)                    // 1-based, from [p. N] links; a page past the end → lastWarning
+    func goTo(page: Int, claim: String? = nil)  // 1-based, from [p. N] links → stack.goTo; past the end → lastWarning
+    func ask(_ action: SelectionAction, selection: String, pages: [Int])  // "Ask Lectern"; pages 1-based;
+                                            // the selection is captured for this question only
+    func runPreset(_ preset: ChatPreset)    // ignored while busy or held by the credits guard
 }
 ```
 
 Views:
 
 ```swift
-struct ChatPaneView: View { @Bindable var model: ChatModel }
+struct ChatPaneView: View { @Bindable var model: ChatModel }   // one conversation, under its title bar
+final class ConversationColumnController: NSViewController     // the chat pane: the stack's panels
 struct PDFReaderView: NSViewRepresentable {
     let document: ReaderDocument
-    @Binding var readingState: ReadingState
-    @Binding var goToPageRequest: Int?      // 0-based
+    let controller: ReaderController
+    @Binding var readingState: ReadingState         // bound to the ConversationStack
+    @Binding var passageRequest: PassageRequest?
 }
 struct TranscriptWebView: NSViewRepresentable {
     let messages: [ChatMessage]
-    let onGoToPage: (Int) -> Void           // 1-based
+    let documentTitle: String               // default name for a saved table: "<title> - table.csv"
+    let onGoTo: (Int, String?) -> Void      // 1-based page, claim (the sentence around the citation)
 }
+// chat.js → Swift messages: goto {page, claim} · copy · open · saveCSV {csv, name} · resync
 ```
+
+Citation checks: when an answer completes, ChatModel runs `CitationVerifier.verify` off the main
+thread and stores the result in `citationChecks` (only if the text didn't change meanwhile). chat.js
+numbers each bracketed citation in order (`[p. 2, 4]` is one), skipping code and link text the same
+way the verifier does, and puts ✓ (verified) or ⚠ (partial, notFound, pageMissing) after it. When the
+count or the lowest page at any ordinal differs, that message shows no badges. Finished tables get
+"Copy CSV" / "Save CSV…" (RFC 4180, UTF-8 with BOM, a leading `'` before formula-like cells).
+Presets: a menu next to the image and whole-document toggles, grouped General / Finance
+(`ChatPreset.all`), disabled while busy, while the credits guard holds a question, or when not signed in.
 
 ## Service constructors (LecternCore)
 
@@ -145,6 +211,9 @@ public enum CodexHomeMode: String, Codable, CaseIterable, Sendable { case isolat
     public var loginMethod: LoginMethod? { get }    // .terminal while a login runs (.browser is unused)
     public func verifyConnection() async -> Bool    // tiny real call; `auth status` can lie
     public func relocateBinary()                    // re-run discovery after the override changes
+    public func oneShot(prompt: String, model: String, timeout: TimeInterval = 20) async -> String?
+                                                    // result text; nil on is_error, timeout or bad output;
+                                                    // never markAuthExpired
 }
 
 @MainActor @Observable public final class CodexService: ProviderService {
@@ -164,6 +233,19 @@ public enum CodexHomeMode: String, Codable, CaseIterable, Sendable { case isolat
     public func creditsCheck(maxAge: TimeInterval = 300) -> CreditsCheck  // .notApplicable | .available |
                                                     // .exhausted | .needsRefresh (unknown or older than maxAge)
     public func refreshQuota() async                // account/rateLimits/read
+    public func oneShot(prompt: String, timeout: TimeInterval = 20) async -> String?  // see "Conversation titles"
+    public static func oneShotModel(in models: [ModelOption]) -> ModelOption?
+                                                    // first id/displayName containing "luna" or "mini", else default
+}
+
+public enum ConversationTitler {                    // Shared/ConversationTitler.swift
+    /// ~5 words / 40 chars (18 for CJK) from the first question; drops an "Explain:"-style label before a
+    /// quotation, quotes and trailing punctuation (a closing "?" stays); "New conversation" when empty.
+    public static func fallbackTitle(question: String) -> String
+    /// 2–6 word title in the question's language; nil when signed out, on any failure, after ~20 s, or
+    /// (Codex) when the purchased-credits check doesn't return .available / .notApplicable.
+    @MainActor public static func title(question: String, answer: String, provider: Provider,
+                                        claude: ClaudeService, codex: CodexService) async -> String?
 }
 ```
 
@@ -193,6 +275,16 @@ public final class ReaderDocument: @unchecked Sendable {
     public func outline() async -> [(title: String, page: Int)] // 0-based pages, capped ~200 entries
     public func renderPagePNG(_ index: Int, maxLongEdge: CGFloat = 1600) async -> URL?  // AppPaths.cache
     public func searchPages(_ query: String, topK: Int) async -> [Int]  // keyword scoring over page texts
+    public func pageTextSource(_ index: Int) async -> TextSource  // .pdfText | .ocr | .none
+    public func isTableHeavy(_ index: Int) async -> Bool         // TableDetector: mostly a table
+}
+
+public enum CitationVerifier {      // checks each [p. N] citation's numbers and "quoted phrases" on the cited pages
+    public static func verify(answer: String, in document: ReaderDocument) async -> [CitationCheck]
+}
+public enum PassageLocator {        // 0-based page; a range in the raw PDFPage.string (the UI page's string,
+                                    // for page.selection(for:)); nil when nothing fits or the page was OCR'd
+    public static func locate(claim: String, page: Int, in document: ReaderDocument) async -> NSRange?
 }
 
 public struct ReadingState: Equatable, Sendable {
@@ -248,7 +340,13 @@ Question: …
   while the unsent text exceeds `tokenBudget`; the context line says so.
 - A PDF that is still locked gets a note that no text or images are available; renders are never
   written while locked (the app asks for the password before showing the reader).
-- Auto-attach the current page image when its text is under ~400 chars (scans, slides, charts).
+- Auto-attach the current page image (once per conversation) when its text is under ~400 chars
+  (slides, charts), when it was OCR'd, or when it is mostly a table; the context line gives the reason.
+- OCR (Vision, `.accurate`, automatic language detection): a page whose PDF text has under 25
+  non-space characters and whose render (from the extraction copy, never the UI copy) has ink. The OCR
+  text replaces the PDF text only when longer; its page block starts with "(text recognized by OCR)".
+  Cached in memory and in `AppPaths.cache/<hash>/ocr/v1-page-N.txt`; `pageText`, `searchPages` and
+  whole-document mode use it.
 - `wholeDocument`: all pages if the estimate fits `tokenBudget`, else `searchPages(question, 12)` plus
   current ±radius; say in the envelope which mode was used.
 - PDFKit flattens tables; the image toggle is the remedy.
@@ -330,6 +428,11 @@ Auth (ClaudeService):
   `auth status` says loggedIn throughout, so only that marker can confirm a re-login.
 - `verifyConnection() async -> Bool`: one-shot `claude -p "Reply with OK" --model haiku --tools ""
   --safe-mode --no-session-persistence --output-format json` (stdin /dev/null); success = `is_error == false`.
+- `oneShot(prompt:model:timeout:)`: the same command shape (`claude -p <prompt> --model <m> --tools ""
+  --safe-mode --no-session-persistence --output-format json`, clean env, stdin /dev/null, cwd
+  `AppPaths.claudeCwd`) → `result` text, nil on `is_error`/timeout/unreadable output. It never calls
+  `markAuthExpired` (titles are best-effort; a real turn's 401 still wins). The prompt goes after `-p`, so
+  it must not start with "-" (the title prompt starts with "Write").
 - After any successful login, existing ClaudeSessions must respawn their process before the next turn.
 - Never call `claude auth logout` (it would log out the user's terminal Claude Code too).
 
@@ -418,6 +521,13 @@ were verified against 0.159.2.
   `execCommandApproval`, `applyPatchApproval` → respond with the schema's decline value; everything
   else → error `{code:-32601,message:"Not supported by Lectern"}`.
 - Process exit: fail in-flight turns with `.processExited`, restart lazily (backoff), threads resume.
+- `oneShot(prompt:timeout:)` (titles): nil when Codex isn't installed or `preflight()` fails (signed out,
+  sign-in running); `creditsCheck()` (re-reading the quota when `.needsRefresh`) must give `.available` or
+  `.notApplicable` (never purchased credits, whatever protectCredits says). `thread/start {model:
+  oneShotModel(in:), serviceTier:"default", cwd: codexCwd, sandbox:"read-only", approvalPolicy:"never",
+  ephemeral:true}` → `turn/start {effort:"low" (else the model's first effort), serviceTier:"default"}` →
+  agent messages joined at `turn/completed`. Timeout → `turn/interrupt`; always removes its listeners and
+  posts `thread/unsubscribe`; never marks the login expired. Verified live: gpt-6-luna, ~2.4 s.
 - Verified quirks: a turn sent while signed out is not refused; the server retries 401s for ~15 s and
   then fails with `codexErrorInfo {httpConnectionFailed:{httpStatusCode:401}}`, so Lectern checks sign-in
   before sending and treats any 401 as `.authRequired`. `thread/resume` of a thread that never completed
@@ -446,11 +556,12 @@ were verified against 0.159.2.
     `isReleasedWhenClosed = false`, not restorable, `tabbingMode .automatic` (system tab preference).
     Content = `NSHostingController(rootView: DocumentWindow)` with `sizingOptions [.minSize]` and no
     scene bridging (the window owns its title).
-  - `ReaderWindowController` (NSWindowDelegate, one per window) receives the ChatModel from
-    DocumentWindow (`onModelReady`) and, in `windowWillClose`, shuts it down exactly once, drops the
-    window from the registry, clears the delegate and then (next main-actor turn) the content view
-    controller, which frees the SwiftUI tree, the ChatModel and the mapped bytes. A model created after
-    its window closed (a late unlock) is shut down immediately.
+  - `ReaderWindowController` (NSWindowDelegate, one per window) receives the ConversationStack from
+    DocumentWindow (`onConversationsReady`) and, in `windowWillClose`, shuts it down exactly once, drops
+    the window from the registry, clears the delegate and then (next main-actor turn) the content view
+    controller, which frees the SwiftUI tree, the conversations and the mapped bytes. A stack created
+    after its window closed (a late unlock) is shut down immediately. `ReaderWindowManager.activeConversations`
+    is the key reader window's stack (File > New Conversation / Close Conversation).
   - Recent files: `recentFiles` = last 10 canonical paths in UserDefaults key `recentFiles`, most recent
     first, de-duplicated, missing files pruned (at launch, on each open, on app activation, on a failed
     open). Each open also calls `NSDocumentController.shared.noteNewRecentDocumentURL` (Dock menu);
@@ -465,7 +576,7 @@ were verified against 0.159.2.
 - Menus (`ReaderCommands`): `.newItem` → "Open…" (⌘O) and "Open Recent" (recent files, a folder suffix
   when names clash, Clear Menu); `.saveItem` → only "Close" (⌘W, `keyWindow.performClose`), since
   replacing that group also removes the standard Close.
-- DocumentWindow(data:fileURL:onModelReady:) = `HSplitView { PDFReaderView ; ChatPaneView }` once the
+- DocumentWindow(data:fileURL:reader:onConversationsReady:) = the reader split (see Viewer) once the
   ReaderDocument loads; an unreadable PDF shows a ContentUnavailableView in the window. Every state
   (loading, password, can't-open, reader) has an unbounded max size (`maxWidth/maxHeight: .infinity`;
   password and can't-open also min 480×320): with a bounded max the hosting view shrinks the window to
@@ -491,18 +602,27 @@ were verified against 0.159.2.
 - `AppServices` (@MainActor singleton): SettingsStore, ClaudeService, CodexService, SessionStore.
 - SettingsStore (UserDefaults): per-provider default TurnSettings (Claude: model "", effort "";
   Codex: model = catalog default, effort = its default, fastTier false), protectCredits (true),
-  codexHomeMode ("isolated"), claudePathOverride, codexPathOverride, neighborRadius (1), lastProvider.
-- SessionStore: `AppPaths.sessions/<contentHash>.json` = `{claudeSessionId, codexThreadId,
-  messages:[ChatMessage]}`; conversation ids saved only after a turn completes; saved after each turn.
-  A reopened document starts with fresh ContextBuilders (all context re-sent once).
+  codexHomeMode ("isolated"), claudePathOverride, codexPathOverride, neighborRadius (1), lastProvider,
+  aiConversationTitles (true).
+- SessionStore: `AppPaths.sessions/<contentHash>.json`, version 2 =
+  `{version: 2, conversations: [StoredConversation], focusedID, viewer}` with StoredConversation =
+  `{id, title, titleIsCustom, provider?, claudeSessionId?, codexThreadId?, messages, collapsed}`, top to
+  bottom. Conversation ids saved only after a turn completes; saved after each turn and each stack change.
+  A reopened document starts with fresh ContextBuilders (all context re-sent once). Decoding is lenient
+  (unknown provider, missing fields). Version 1 files (`{claudeSessionId, codexThreadId, messages,
+  viewer}`) load as one conversation titled `fallbackTitle(first question)` ("Conversation" without one);
+  a v1 file with only viewer state loads with no conversations; the next write is version 2 (no v1 keys).
+  Lectern 0.1.0 reads a v2 file as an empty chat, and its next save (even `saveViewer`) can drop the
+  conversations: a downgrade loses them (GUIDE says so).
 - `.conversationReset` from a session → reset that provider's ContextBuilder; if it ended a sent turn,
   drop the placeholder reply and re-queue the question first (its prompt is rebuilt with full context).
 - `.interrupted` with no answer text → `ContextBuilder.discard` that prompt (it may never have been
   delivered). Stop timeout → the replacement session resumes `conversationIds[p]`, else reset the builder.
 - Two windows on the same bytes (same contentHash; a copy at another path, since the same file only
-  focuses its window): the second shows the saved chat but starts new conversations and never saves (a
-  notice says so). `AppServices.isOpen(contentHash:)` ignores shut-down models, so once the first
-  window closes, the next window on those bytes is the primary one again. `ChatModel.shutdown()` is idempotent (a later `send()`
+  focuses its window): the second (`ConversationStack.isSecondaryWindow`) shows the saved conversations
+  but starts new backend conversations and never saves (a notice in its focused conversation says so).
+  `AppServices.isOpen(contentHash:)` ignores shut-down models, so once the first window closes, the next
+  window on those bytes is the primary one again. `ChatModel.shutdown()` is idempotent (a later `send()`
   re-arms it).
 - Encrypted PDFs: DocumentWindow asks for the password (SecureField) and calls `unlock(password:)`
   before creating the reader; PDFView's own prompt would unlock only the UI copy.
@@ -525,7 +645,51 @@ were verified against 0.159.2.
 - Settings window tabs: **Accounts** (per provider: status, account; Claude: Log in in Terminal /
   Verify connection; ChatGPT: Sign in with ChatGPT / device code / Sign out (isolated only); quota), **Models** (defaults,
   fast tier toggle with "uses ~2.5× your included usage", protect-credits toggle), **Advanced**
-  (binary path overrides with detected path shown, Codex home mode, context radius).
+  (binary path overrides with detected path shown, Codex home mode, context radius, Conversations: "AI
+  conversation titles").
+
+## Conversations (stacked chat panels)
+
+Each document window has a `ConversationStack` of 1–4 conversations (`ChatModel`s), shown top to bottom
+in the chat pane. Each conversation has its own provider choice, Claude session, Codex thread, context
+builders, messages, title and collapsed state; the stack owns the shared reading state, citation
+jumps, the focus and the saved file.
+
+- **Pane** (`ConversationColumnController`, Views/ConversationStackView.swift): an AppKit `NSSplitView`
+  (`isVertical = false`, thin dividers) over a 30 pt "+ New Conversation" bar. Panels are
+  `NSHostingView(ConversationPanel)` with no sizing or scene bridging; sync via
+  `withObservationTracking` on `conversations` and each `isCollapsed`. Panels are reordered or hidden, not
+  rebuilt, so a transcript's web view keeps its page. Expanded panels share the height in proportion to
+  their last heights (divider drags and window resizes update the shares; reopening splits equally, as
+  heights aren't saved). Collapsed = the 30 pt title bar only; a divider next to one doesn't move.
+  Dividers stop at 200 pt per expanded panel (an equal share when the pane is shorter).
+- **Focus**: a local left/right mouse-down monitor focuses the panel under the click; focusing the input
+  or running a preset focuses its conversation. A new conversation takes focus and its input the
+  keyboard focus. With more than one panel the focused title bar is tinted with the accent color.
+  `focusedID` is saved with the next change. Ask Lectern (`ReaderController.onAsk` → `stack.ask`) goes to
+  the focused conversation and expands it; ⌘. (Stop) is bound only in the focused panel.
+- **Title bar**: chevron (collapse/expand), title (double-click → inline field: Return or clicking away
+  commits, Esc cancels, empty → automatic title), a spinner while either provider answers, the provider
+  name when collapsed, and a "⋯" menu: Rename…, New Chat (`clearConversation`, disabled while busy),
+  Move Up, Move Down, Close Conversation. Close and New Chat ask first (NSAlert sheet) when the
+  conversation has user messages; the last conversation can't be closed. The header's pencil "New chat"
+  still resets only the selected provider's conversation.
+- **Titles**: when the first answer of a conversation completes, the title becomes
+  `ConversationTitler.fallbackTitle(question)` (the shown user message, e.g. "Explain: “…”") and is saved
+  with the turn; then, if `aiConversationTitles` and not renamed, `ConversationTitler.title` runs off the
+  critical path with the question and the answer's first 4000 characters (the titler caps both at 600)
+  and replaces the title only if no rename or clear happened meanwhile (`titleGeneration`). Later answers
+  never retitle. Claude uses `oneShot(model: "haiku")`; Codex `oneShot` (above). Prompt: "Write a 2–6
+  word title for a conversation about this. Use the language of the question. Reply with the title only,
+  no quotes or period." + question + answer. The reply is cleaned (first line, no markdown, "Title:"/"标题："
+  labels, quotes or trailing punctuation, ≤ 48 chars). A nil title keeps the fallback (no retry).
+  Clearing a custom name goes back to the last automatic title (or re-titles from the first exchange).
+- **Menus**: File > New Conversation (⌥⌘N; shows the chat pane if hidden; disabled at 4) and File >
+  Close Conversation (⌥⌘W; the focused conversation; disabled with one conversation or the chat
+  hidden). Like the viewer menus they need a key reader window.
+- **Probe**: `lectern-probe title --provider claude|codex [--home shared|isolated] --question Q --answer A`
+  prints the fallback, auth, (Codex) credits check and model, then the title and its time (exit 0 title,
+  1 nil, 2 usage). It also starts a Codex app-server for reads only.
 
 ## Rules
 
@@ -545,31 +709,47 @@ Preview-style viewing around the same PDFView. Files: `App/ReaderController.swif
 `Views/ReaderToolbar.swift`, `Views/ReaderSidebar.swift`, `Views/DocumentWindow.swift`
 (`ReaderSplitViewController`), plus `ReaderWindows.swift`, `LecternApp.swift` (menus) and
 `SessionStore.swift` (`ViewerState`). Where the App layer section above differs, this section wins:
-`DocumentWindow(data:fileURL:reader:onModelReady:)`, the split layout below, and File > Print….
-Nothing here writes to the PDF (no annotations, no save).
+`DocumentWindow(data:fileURL:reader:onConversationsReady:)`, the split layout below, and File > Print….
+Nothing here writes to the PDF (no save; highlights are in-memory annotations on the UI copy only).
 
 - **ReaderController** (`@MainActor @Observable`, one per window, owned by `ReaderWindowController`)
   owns the `PDFView` (`ReaderPDFView`: Esc / resize / layout hooks) and the `PDFThumbnailView`.
   State: `pageCount`, `currentPageIndex`, `currentPageLabel`, `scaleFactor`, `zoomMode`
   (fitWidth | fitPage | custom), `displayMode`, `sidebarVisible`, `sidebarMode` (thumbnails |
-  contents | searchResults), `chatVisible`, `hasOutline`, `canGoBack/Forward`, search state
+  contents | highlights | searchResults), `chatVisible`, `hasOutline`, `canGoBack/Forward`, search state
   (`searchText`, `searchStatus`, `matches`, `currentMatchIndex`, `matchesTruncated`, `searchID`).
   Actions: `goToPage(_:)`, `goToPage(text:)`, next/previous/first/last, `goBack/goForward`,
   `zoomIn/zoomOut/actualSize/zoomToFit/zoomToWidth`, `setDisplayMode`, `toggleSidebar`,
   `showSidebar(_:)`, `toggleChat`, `focusSearch`, `searchTextChanged/searchSubmitted`,
   `findNext/findPrevious/useSelectionForFind/endSearch`, `focusPageField`, `printDocument`.
-  `attach(_:store:persists:)` runs once the ChatModel exists (after the password for encrypted PDFs);
+  `attach(_:store:persists:)` runs once the ConversationStack exists (after the password for encrypted PDFs);
   until then every viewer command is disabled.
 - **PDFReaderView** shows `controller.pdfView` in a container and still writes `ReadingState` and
-  honors `goToPageRequest`; it reports the current page to the controller, and a request goes through
-  `controller.goToPage`, so citation jumps are recorded for Back.
+  honors `passageRequest` (once per id); it reports the current page to the controller, and a request
+  goes through `controller.showPassage` → `goToPage`, so citation jumps are recorded for Back. With a
+  claim, `PassageLocator` finds the passage; the view scrolls to it and flashes it with orange
+  annotations for 2.5 s (never `currentSelection`, never saved).
+- **Selection menu**: `ReaderPDFView.menu(for:)` puts "Ask Lectern ▸" (one item per
+  `SelectionAction`, → `ConversationStack.ask` (the focused conversation) through `ReaderController.onAsk`;
+  shows the chat pane),
+  "Highlight ▸" (5 colors) and "Add Note…" above PDFKit's items; on a highlight: Add/Edit Note…,
+  Change Color ▸, Remove Highlight.
+- **Highlights** (`HighlightStore`, `@Observable`, one per contentHash shared by windows through a weak
+  registry): `AppPaths.appSupport/highlights/<contentHash>.json` = records {id, page (0-based),
+  location/length in `PDFPage.string`, text, color, note?, createdAt}, in page order; the file is
+  deleted with the last highlight and never overwritten when it can't be read. Drawn as `.highlight`
+  annotations, one per line, on the UI document only (so page images for the AI never have them); a
+  range that no longer holds its text is found again by searching the page. The note sheet is an
+  `NSAlert` with a text field. Sidebar mode Highlights lists them (click → go, recorded for Back;
+  context menu Edit Note…, Change Color, Delete). Export Highlights… writes Markdown through
+  `NSSavePanel` (never to the PDF's path).
 - **Toolbar**: an AppKit `NSToolbar` (unified, not customizable; SwiftUI bridges nothing): sidebar
   toggle · page box + "of N" ("(n of N)" next to a page label) · zoom − / + · scale pull-down (percent,
   Actual Size, Zoom to Fit, Zoom to Width) · display-mode menu · match counter + search field · chat
   toggle. A new window's focus goes to the PDF, not the page box.
 - **Layout**: `ReaderSplitViewController` (an `NSSplitViewController` in a representable): sidebar item
   (140–320 pt, starts at 180, collapsible), PDF (min 260, lowest holding priority, so it takes window
-  resizing), chat (min 340, starts at 440, collapsible). Hiding collapses a pane and keeps its views
+  resizing), chat (`ConversationColumnController`; min 340, starts at 440, collapsible). Hiding collapses a pane and keeps its views
   (the chat's web view isn't reloaded); dragging a divider closed updates the controller. SwiftUI's
   `HSplitView` was dropped: it can't set initial divider positions and rebuilt hidden panes.
 - **Sidebar**: segmented picker at the top: Thumbnails, Table of Contents (only when the PDF has an
@@ -608,9 +788,12 @@ Nothing here writes to the PDF (no annotations, no save).
 
   | Menu | Item | Key |
   |---|---|---|
+  | File | New Conversation · Close Conversation (the focused one) — see Conversations | ⌥⌘N · ⌥⌘W |
   | File | Print… (the PDF via `PDFDocument.printOperation`, scaled down to fit; disabled if the PDF forbids printing) | ⌘P |
   | Edit > Find | Find… / Find Next / Find Previous / Use Selection for Find | ⌘F / ⌘G / ⇧⌘G / ⌘E |
-  | View | Hide/Show Sidebar · Thumbnails · Table of Contents | ⌥⌘1 · ⌥⌘2 · ⌥⌘3 |
+  | File | Export Highlights… (disabled without highlights) | ⇧⌘E |
+  | Edit | Ask Lectern ▸ · Highlight Selection · Add Note to Selection… (need a text selection) | – · ⌃⌘H · – |
+  | View | Hide/Show Sidebar · Thumbnails · Table of Contents · Highlights | ⌥⌘1 · ⌥⌘2 · ⌥⌘3 · ⌥⌘4 |
   | View | Hide/Show Chat | ⌃⌘C |
   | View | Actual Size · Zoom to Fit · Zoom to Width · Zoom In · Zoom Out | ⌘0 · ⌘9 · – · ⌘+ (and ⌘=) · ⌘− |
   | View | Single Page / Single Page Continuous / Two Pages / Two Pages Continuous (checkmark) | – |
@@ -624,7 +807,7 @@ Nothing here writes to the PDF (no annotations, no save).
 - **Restore**: `ViewerState` = `{page, zoom, scale, displayMode, sidebarVisible, sidebarMode,
   chatVisible}` in the document's `sessions/<contentHash>.json` under `"viewer"` (every field optional;
   `StoredSession` decodes a missing or unreadable `viewer` as nil and missing `messages` as []).
-  ChatModel's saves keep the viewer state on disk; `saveViewer` never rewrites a file it can't decode.
+  The stack's saves keep the viewer state on disk; `saveViewer` never rewrites a file it can't decode.
   Saved 1 s after a change, when the window closes and at quit; the search-results sidebar is saved as
   the mode from before the search. A second window on the same bytes restores but doesn't save (like
   its chat). Restoring applies the page after the PDFView's first layout (retried while PDFKit lays out

@@ -1,33 +1,53 @@
 import Foundation
 import LecternCore
 
-/// What is remembered about one document between launches.
-struct StoredSession: Codable, Equatable {
+/// One conversation panel as saved: its title, provider, backend conversation ids and transcript.
+struct StoredConversation: Codable, Equatable, Identifiable {
+    static let defaultTitle = "New conversation"
+
+    var id: UUID
+    var title: String
+    /// The user named it; automatic titles never replace a custom one.
+    var titleIsCustom: Bool
+    /// The provider the panel showed; nil means the app's last provider.
+    var provider: Provider?
     /// Claude session UUID; only set once a turn completed under it.
     var claudeSessionId: String?
     /// Codex thread id; only set once a turn completed in it.
     var codexThreadId: String?
     var messages: [ChatMessage]
-    /// Where the reader was (page, zoom, layout). Optional: files from before it existed decode as nil.
-    var viewer: ViewerState?
+    /// The panel showed only its title bar.
+    var collapsed: Bool
 
-    init(claudeSessionId: String? = nil, codexThreadId: String? = nil, messages: [ChatMessage] = [],
-         viewer: ViewerState? = nil) {
+    init(id: UUID = UUID(), title: String = Self.defaultTitle, titleIsCustom: Bool = false,
+         provider: Provider? = nil, claudeSessionId: String? = nil, codexThreadId: String? = nil,
+         messages: [ChatMessage] = [], collapsed: Bool = false) {
+        self.id = id
+        self.title = title
+        self.titleIsCustom = titleIsCustom
+        self.provider = provider
         self.claudeSessionId = claudeSessionId
         self.codexThreadId = codexThreadId
         self.messages = messages
-        self.viewer = viewer
+        self.collapsed = collapsed
     }
 
-    private enum CodingKeys: String, CodingKey { case claudeSessionId, codexThreadId, messages, viewer }
+    private enum CodingKeys: String, CodingKey {
+        case id, title, titleIsCustom, provider, claudeSessionId, codexThreadId, messages, collapsed
+    }
 
+    /// Lenient: a missing or unknown field (a newer Lectern's provider, say) must not cost the messages.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decodeIfPresent(UUID.self, forKey: .id)) ?? UUID()
+        let title = (try? c.decodeIfPresent(String.self, forKey: .title)) ?? ""
+        self.title = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Self.defaultTitle : title
+        titleIsCustom = (try? c.decodeIfPresent(Bool.self, forKey: .titleIsCustom)) ?? false
+        provider = try? c.decodeIfPresent(Provider.self, forKey: .provider)
         claudeSessionId = try c.decodeIfPresent(String.self, forKey: .claudeSessionId)
         codexThreadId = try c.decodeIfPresent(String.self, forKey: .codexThreadId)
         messages = try c.decodeIfPresent([ChatMessage].self, forKey: .messages) ?? []
-        // A viewer entry that can't be read must not cost the saved chat.
-        viewer = try? c.decodeIfPresent(ViewerState.self, forKey: .viewer)
+        collapsed = (try? c.decodeIfPresent(Bool.self, forKey: .collapsed)) ?? false
     }
 
     func conversationId(for provider: Provider) -> String? {
@@ -35,6 +55,67 @@ struct StoredSession: Codable, Equatable {
         case .claude: return claudeSessionId
         case .codex: return codexThreadId
         }
+    }
+}
+
+/// What is remembered about one document between launches:
+/// `{version: 2, conversations: [StoredConversation], focusedID, viewer}`.
+/// Version 1 files (`{claudeSessionId, codexThreadId, messages, viewer}`, one conversation per
+/// document) decode as a single conversation and are written back as version 2.
+struct StoredSession: Codable, Equatable {
+    static let currentVersion = 2
+    /// Title of a migrated conversation that has no question to name it after.
+    static let migratedTitle = "Conversation"
+
+    /// Top to bottom, as the panels were stacked.
+    var conversations: [StoredConversation]
+    /// The conversation Ask Lectern went to.
+    var focusedID: UUID?
+    /// Where the reader was (page, zoom, layout). Optional: files from before it existed decode as nil.
+    var viewer: ViewerState?
+
+    init(conversations: [StoredConversation] = [], focusedID: UUID? = nil, viewer: ViewerState? = nil) {
+        self.conversations = conversations
+        self.focusedID = focusedID
+        self.viewer = viewer
+    }
+
+    private enum CodingKeys: String, CodingKey { case version, conversations, focusedID, viewer }
+    private enum LegacyKeys: String, CodingKey { case claudeSessionId, codexThreadId, messages }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        // A viewer entry that can't be read must not cost the saved chat.
+        viewer = try? c.decodeIfPresent(ViewerState.self, forKey: .viewer)
+        if c.contains(.conversations) {
+            conversations = try c.decode([StoredConversation].self, forKey: .conversations)
+            focusedID = try? c.decodeIfPresent(UUID.self, forKey: .focusedID)
+            return
+        }
+        let legacy = try decoder.container(keyedBy: LegacyKeys.self)
+        let messages = try legacy.decodeIfPresent([ChatMessage].self, forKey: .messages) ?? []
+        let claude = try legacy.decodeIfPresent(String.self, forKey: .claudeSessionId)
+        let codex = try legacy.decodeIfPresent(String.self, forKey: .codexThreadId)
+        guard !messages.isEmpty || claude != nil || codex != nil else {
+            // Viewer state only: there was no conversation yet.
+            conversations = []
+            focusedID = nil
+            return
+        }
+        let question = messages.first { $0.role == .user }?.text
+        let migrated = StoredConversation(
+            title: question.map { ConversationTitler.fallbackTitle(question: $0) } ?? Self.migratedTitle,
+            claudeSessionId: claude, codexThreadId: codex, messages: messages)
+        conversations = [migrated]
+        focusedID = migrated.id
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(Self.currentVersion, forKey: .version)
+        try c.encode(conversations, forKey: .conversations)
+        try c.encodeIfPresent(focusedID, forKey: .focusedID)
+        try c.encodeIfPresent(viewer, forKey: .viewer)
     }
 }
 
@@ -56,8 +137,8 @@ final class SessionStore: Sendable {
         return try? JSONDecoder().decode(StoredSession.self, from: data)
     }
 
-    /// Saves the chat. A session without viewer state keeps the one already on disk (ChatModel doesn't
-    /// track it; ReaderController saves it with `saveViewer`).
+    /// Saves the chat. A session without viewer state keeps the one already on disk (the
+    /// conversations don't track it; ReaderController saves it with `saveViewer`).
     func save(_ session: StoredSession, contentHash: String) {
         var merged = session
         if merged.viewer == nil { merged.viewer = load(contentHash: contentHash)?.viewer }
@@ -100,7 +181,7 @@ struct ViewerState: Codable, Equatable {
     /// ReaderController.DisplayMode raw value.
     var displayMode: String?
     var sidebarVisible: Bool?
-    /// "thumbnails" or "contents".
+    /// "thumbnails", "contents" or "highlights".
     var sidebarMode: String?
     var chatVisible: Bool?
 }

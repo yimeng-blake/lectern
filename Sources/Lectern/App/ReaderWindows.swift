@@ -21,6 +21,9 @@ final class ReaderWindowManager {
     /// The viewer controller of the key reader window; the View, Go and Find menus act on it and are
     /// disabled while it is nil (no reader window is key).
     private(set) var activeReader: ReaderController?
+    /// The key reader window's conversations (File > New Conversation / Close Conversation); nil
+    /// while no reader window is key or its PDF isn't showing yet.
+    private(set) var activeConversations: ConversationStack?
 
     /// Open reader windows by canonical path (see `canonical(_:)`).
     @ObservationIgnored private var controllers: [String: ReaderWindowController] = [:]
@@ -125,7 +128,7 @@ final class ReaderWindowManager {
         if controllers[controller.key] === controller {
             controllers.removeValue(forKey: controller.key)
         }
-        readerResignedKey(controller.reader)
+        readerResignedKey(controller)
     }
 
     /// App quitting: windows aren't closed one by one, so save each reader's place now.
@@ -138,12 +141,15 @@ final class ReaderWindowManager {
         controllers.values.contains { $0.reader !== reader && $0.reader.document?.contentHash == contentHash }
     }
 
-    fileprivate func readerBecameKey(_ reader: ReaderController) {
-        if activeReader !== reader { activeReader = reader }
+    fileprivate func readerBecameKey(_ controller: ReaderWindowController) {
+        if activeReader !== controller.reader { activeReader = controller.reader }
+        if activeConversations !== controller.conversations { activeConversations = controller.conversations }
     }
 
-    fileprivate func readerResignedKey(_ reader: ReaderController) {
-        if activeReader === reader { activeReader = nil }
+    fileprivate func readerResignedKey(_ controller: ReaderWindowController) {
+        guard activeReader === controller.reader else { return }
+        activeReader = nil
+        activeConversations = nil
     }
 
     private func presentOpenError(_ error: Error, for url: URL) {
@@ -278,8 +284,8 @@ final class ReaderWindowManager {
 }
 
 /// One reader window: an AppKit window hosting `DocumentWindow`, with the reader toolbar. It owns the
-/// window's ReaderController and ChatModel lifetimes and shuts the model down exactly once, when the
-/// window closes.
+/// window's ReaderController and ConversationStack lifetimes and shuts the conversations down exactly
+/// once, when the window closes.
 @MainActor
 private final class ReaderWindowController: NSObject, NSWindowDelegate {
     let fileURL: URL
@@ -288,7 +294,7 @@ private final class ReaderWindowController: NSObject, NSWindowDelegate {
     let window: NSWindow
     let reader = ReaderController()
     private let toolbar: ReaderToolbar
-    private var model: ChatModel?
+    private(set) var conversations: ConversationStack?
     private var isClosed = false
     private let onClose: (ReaderWindowController) -> Void
 
@@ -313,8 +319,8 @@ private final class ReaderWindowController: NSObject, NSWindowDelegate {
         window.toolbar = toolbar.toolbar
         window.toolbarStyle = .unified
 
-        let root = DocumentWindow(data: data, fileURL: fileURL, reader: reader) { [weak self] model in
-            self?.adopt(model)
+        let root = DocumentWindow(data: data, fileURL: fileURL, reader: reader) { [weak self] stack in
+            self?.adopt(stack)
         }
         let hosting = NSHostingController(rootView: root)
         // The window keeps its own size; SwiftUI only sets the minimum (provided every DocumentWindow
@@ -337,37 +343,38 @@ private final class ReaderWindowController: NSObject, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
     }
 
-    /// DocumentWindow made its ChatModel (after loading, or after the password was accepted).
-    private func adopt(_ model: ChatModel) {
+    /// DocumentWindow made its conversations (after loading, or after the password was accepted).
+    private func adopt(_ stack: ConversationStack) {
         // An unlock that finished after the window closed.
         guard !isClosed else {
-            model.shutdown()
+            stack.shutdown()
             return
         }
-        self.model = model
-        let secondary = ReaderWindowManager.shared.otherReaderShows(contentHash: model.document.contentHash,
+        conversations = stack
+        let secondary = ReaderWindowManager.shared.otherReaderShows(contentHash: stack.document.contentHash,
                                                                     besides: reader)
-        reader.attach(model.document, store: AppServices.shared.sessions, persists: !secondary)
+        reader.attach(stack.document, store: AppServices.shared.sessions, persists: !secondary)
+        if window.isKeyWindow { ReaderWindowManager.shared.readerBecameKey(self) }
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
-        ReaderWindowManager.shared.readerBecameKey(reader)
+        ReaderWindowManager.shared.readerBecameKey(self)
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        ReaderWindowManager.shared.readerResignedKey(reader)
+        ReaderWindowManager.shared.readerResignedKey(self)
     }
 
     func windowWillClose(_ notification: Notification) {
         guard !isClosed else { return }
         isClosed = true
         reader.close()
-        model?.shutdown()
-        model = nil
+        conversations?.shutdown()
+        conversations = nil
         window.delegate = nil
         onClose(self)
         // Tear the SwiftUI hierarchy down once AppKit has finished closing the window; this releases
-        // the view's ChatModel and the closure that points back here.
+        // the view's conversations and the closure that points back here.
         Task { @MainActor [self] in
             self.window.contentViewController = nil
         }

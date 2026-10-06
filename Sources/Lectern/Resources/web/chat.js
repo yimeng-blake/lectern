@@ -1,5 +1,5 @@
 // Lectern chat transcript. Swift pushes the message list with Lectern.sync(messages); the page
-// posts {type:"goto"|"copy"|"open"|"resync"} back through the "lectern" message handler.
+// posts {type:"goto"|"copy"|"open"|"saveCSV"|"resync"} back through the "lectern" message handler.
 // The pure helpers (renderMarkdown, extractMath, linkifyCitations, …) also load in node for tests.
 (function (root) {
   'use strict';
@@ -224,24 +224,81 @@
     return '<a class="cite" href="#" data-page="' + page + '" title="Go to page ' + page + '">' + label + '</a>';
   }
 
+  const BADGE_SLOT_RE = /<!--lectern-badge:(\d+)-->/g;
+
   /// Turns [p. N], [pp. N–M], (p. N), (pages 2, 5) … in escaped text into page links (to the first
-  /// page of a range). Leaves text inside links and code alone.
-  function linkifyCitations(html) {
+  /// page of a range). Leaves text inside links and code alone. Each bracketed citation becomes a
+  /// numbered `.cite-group` (its 0-based order in the answer, like CitationCheck.ordinal) with a slot
+  /// for its badge; `groups`, when given, receives each one's lowest page number.
+  function linkifyCitations(html, groups) {
+    let ordinal = 0;
     return mapTextRuns(html, (text, skipped) => {
       if (skipped) return text;
       return text.replace(CITE_RE, (whole, open, inner, close) => {
         if ((open === '[') !== (close === ']')) return whole;
+        const numbers = (inner.match(/\d+/g) || []).map((d) => parseInt(d, 10));
+        if (groups) groups.push({ page: Math.min.apply(null, numbers) });
         const items = inner.match(CITE_ITEM_RE) || [];
+        let linked;
         if (items.length <= 1) {
-          const page = parseInt(/\d+/.exec(inner)[0], 10);
-          return page >= 1 ? citeAnchor(whole, page) : whole;
+          const page = numbers[0];
+          linked = page >= 1 ? citeAnchor(whole, page) : whole;
+        } else {
+          linked = open + inner.replace(CITE_ITEM_RE, (item, first) => {
+            const page = parseInt(first, 10);
+            return page >= 1 ? citeAnchor(item, page) : item;
+          }) + close;
         }
-        return open + inner.replace(CITE_ITEM_RE, (item, first) => {
-          const page = parseInt(first, 10);
-          return page >= 1 ? citeAnchor(item, page) : item;
-        }) + close;
+        const k = ordinal++;
+        return '<span class="cite-group" data-cite="' + k + '">' + linked + '<!--lectern-badge:' + k + '--></span>';
       });
     });
+  }
+
+  function pageLabel(pages) {
+    const list = (pages || []).filter((n) => Number.isFinite(n));
+    if (list.length <= 1) return 'p. ' + (list.length ? list[0] : '?');
+    const contiguous = list.every((n, k) => k === 0 || n === list[k - 1] + 1);
+    return 'pp. ' + (contiguous ? list[0] + '–' + list[list.length - 1] : list.join(', '));
+  }
+
+  function badgeHTML(check) {
+    const missing = (check.missing || []).map(String).filter((m) => m);
+    let cls;
+    let tip;
+    switch (check.status) {
+      case 'verified':
+        cls = 'ok';
+        tip = 'Found on ' + pageLabel(check.pages);
+        break;
+      case 'partial':
+      case 'notFound':
+        cls = 'warn';
+        tip = 'Not found on ' + pageLabel(check.pages) + (missing.length ? ': ' + missing.join(', ') : '');
+        break;
+      case 'pageMissing':
+        cls = 'warn';
+        tip = 'No ' + pageLabel(check.pages).replace(/^pp?\. /, (check.pages || []).length > 1 ? 'pages ' : 'page ');
+        break;
+      default:
+        return '';
+    }
+    const t = escapeHtml(tip);
+    return '<span class="cite-badge ' + cls + '" title="' + t + '" aria-label="' + t + '">' +
+      (cls === 'ok' ? '✓' : '⚠') + '</span>';
+  }
+
+  /// Fills the badge slots from Swift's CitationChecks (matched by ordinal). When the checks don't
+  /// line up with the citations found here (different count, or a different page at some ordinal),
+  /// the message gets no badges rather than wrong ones.
+  function applyCitationBadges(html, groups, checks) {
+    const list = Array.isArray(checks) ? checks.slice().sort((a, b) => a.ordinal - b.ordinal) : [];
+    const aligned = list.length > 0 && list.length === groups.length && list.every((c, k) => {
+      if (!c || c.ordinal !== k) return false;
+      const pages = Array.isArray(c.pages) ? c.pages : [];
+      return pages.length === 0 || Math.min.apply(null, pages) === groups[k].page;
+    });
+    return html.replace(BADGE_SLOT_RE, (_, k) => (aligned ? badgeHTML(list[+k]) : ''));
   }
 
   const texCache = new Map();
@@ -281,13 +338,158 @@
     );
   }
 
-  /// Markdown → safe HTML with page links and KaTeX math.
-  function renderMarkdown(src) {
+  const TABLE_OPEN =
+    '<div class="table-block"><div class="table-tools">' +
+    '<button type="button" class="table-csv-copy" title="Copy the table as CSV">Copy CSV</button>' +
+    '<button type="button" class="table-csv-save" title="Save the table as a CSV file">Save CSV…</button>' +
+    '</div><div class="table-wrap"><table>';
+
+  /// Markdown → safe HTML with page links, citation badges (from `checks`, optional) and KaTeX math.
+  function renderMarkdown(src, checks) {
     const { text, maths } = extractMath(src);
     let html = md().parse(text);
-    html = html.replace(/<table>/g, '<div class="table-wrap"><table>').replace(/<\/table>/g, '</table></div>');
-    html = linkifyCitations(html);
-    return restoreMath(html, maths);
+    html = html.replace(/<table>/g, TABLE_OPEN).replace(/<\/table>/g, '</table></div></div>');
+    const groups = [];
+    html = linkifyCitations(html, groups);
+    html = restoreMath(html, maths);
+    return applyCitationBadges(html, groups, checks);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Citation claims: the sentence a clicked citation supports, sent with the page so the reader can
+  // highlight the passage. Built from the rendered block's text, with the clicked citation replaced
+  // by MARK and the block's other citations by OTHER.
+
+  const MARK = '\u0001';
+  const OTHER = '\u0002';
+  const ABBREVIATIONS = new Set(['pp', 'vs', 'etc', 'inc', 'co', 'corp', 'ltd', 'mr', 'mrs', 'ms', 'dr', 'no',
+    'fig', 'figs', 'approx', 'e.g', 'i.e', 'cf', 'est', 'jan', 'feb', 'mar', 'apr', 'jun', 'jul', 'aug',
+    'sep', 'sept', 'oct', 'nov', 'dec']);
+
+  /// Whether text[i] ends a sentence. Decimal points (412.7), "p. 3", "e.g." and initials don't.
+  function isSentenceEnd(text, i) {
+    const c = text[i];
+    if (c === '。' || c === '！' || c === '？') return true;
+    if (c !== '.' && c !== '!' && c !== '?') return false;
+    let j = i + 1;
+    while (j < text.length && /["'”’)\]]/.test(text[j])) j++;
+    if (j < text.length && !/\s/.test(text[j])) return false;
+    if (c === '.') {
+      const word = /([A-Za-z][A-Za-z.]*)$/.exec(text.slice(Math.max(0, i - 12), i));
+      if (word && (word[1].length === 1 || ABBREVIATIONS.has(word[1].toLowerCase()))) return false;
+    }
+    return true;
+  }
+
+  function cleanClaim(s) {
+    return s
+      .split(MARK).join(' ')
+      .split(OTHER).join(' ')
+      .replace(/\s+/g, ' ')
+      .replace(/\s+([.,;:!?)\]。，；：！？])/g, '$1')
+      .replace(/([(\[])\s+/g, '$1')
+      .replace(/^[\s,;:–—-]+/, '')
+      .replace(/[\s,;:–—-]+$/, '')
+      .trim()
+      .slice(0, 600);
+  }
+
+  function wordCount(s) {
+    // A CJK character counts as a word.
+    return (s.match(/[A-Za-z0-9$€£¥%.,]+|[\u3400-\u9fff]/g) || []).length;
+  }
+
+  /// The claim for MARK in `raw`: the sentence it ends or sits in. With several citations in one
+  /// sentence, the clause since the previous citation; a citation that opens a sentence supports
+  /// the sentence before it.
+  function claimFromText(raw) {
+    const text = String(raw == null ? '' : raw).replace(/\s+/g, ' ');
+    const at = text.indexOf(MARK);
+    if (at < 0) return cleanClaim(text);
+    let start = 0;
+    for (let i = at - 1; i >= 0; i--) if (isSentenceEnd(text, i)) { start = i + 1; break; }
+    let end = text.length;
+    for (let i = at + 1; i < text.length; i++) if (isSentenceEnd(text, i)) { end = i + 1; break; }
+    if (!cleanClaim(text.slice(start, at))) {
+      if (start === 0) return cleanClaim(text.slice(at + 1, end));
+      let prev = 0;
+      for (let i = start - 2; i >= 0; i--) if (isSentenceEnd(text, i)) { prev = i + 1; break; }
+      return cleanClaim(text.slice(prev, start));
+    }
+    const before = text.lastIndexOf(OTHER, at);
+    const after = text.indexOf(OTHER, at);
+    const clauseStart = before >= start ? before + 1 : start;
+    const clauseEnd = after >= 0 && after < end ? at : end;
+    const clause = cleanClaim(text.slice(clauseStart, clauseEnd));
+    if (wordCount(clause) >= 3) return clause;
+    return cleanClaim(text.slice(start, end));
+  }
+
+  const SKIP_CLASSES = ['cite-badge', 'table-tools', 'caret'];
+
+  /// Visible text of a rendered element: math as its TeX source, no badges or buttons. `hook(el)` may
+  /// return a string to use instead of an element's text.
+  function plainText(node, hook) {
+    let out = '';
+    const walk = (n) => {
+      for (const child of n.childNodes) {
+        if (child.nodeType === 3) { out += child.nodeValue; continue; }
+        if (child.nodeType !== 1) continue;
+        const replaced = hook ? hook(child) : undefined;
+        if (replaced != null) { out += replaced; continue; }
+        if (SKIP_CLASSES.some((c) => child.classList.contains(c))) continue;
+        if (child.classList.contains('katex')) {
+          const tex = child.querySelector('annotation');
+          out += tex ? tex.textContent : '';
+          continue;
+        }
+        if (child.tagName === 'BR') { out += ' '; continue; }
+        walk(child);
+        if (child.tagName === 'TD' || child.tagName === 'TH') out += ' ';
+      }
+    };
+    walk(node);
+    return out;
+  }
+
+  /// The claim for a clicked `.cite-group`: its sentence, or its table row.
+  function citationClaim(group) {
+    if (!group || !group.closest) return '';
+    const cell = group.closest('td, th');
+    const block = (cell && cell.closest('tr')) ||
+      group.closest('p, li, h1, h2, h3, h4, h5, h6, dd, dt, blockquote') || group.closest('.body');
+    if (!block) return '';
+    const text = plainText(block, (el) => {
+      if (el === group) return MARK;
+      if (el.classList.contains('cite-group')) return OTHER;
+      // A list item's nested list holds other claims.
+      if ((el.tagName === 'UL' || el.tagName === 'OL') && !el.contains(group)) return ' ';
+      return undefined;
+    });
+    return claimFromText(text);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Tables → CSV (RFC 4180, CRLF line ends)
+
+  function csvField(value) {
+    let s = String(value == null ? '' : value);
+    // Spreadsheets run cells that start with = + - @ as formulas; "-12.3%" and "+4" stay as shown.
+    if (/^[=@\t\r]/.test(s) || (/^[+-]/.test(s) && /[=(|!@]/.test(s))) s = "'" + s;
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  function toCSV(rows) {
+    return rows.map((row) => row.map(csvField).join(',')).join('\r\n') + '\r\n';
+  }
+
+  function tableRows(table) {
+    const rows = [];
+    for (const tr of table.querySelectorAll('tr')) {
+      const cells = Array.from(tr.children).filter((c) => c.tagName === 'TD' || c.tagName === 'TH');
+      rows.push(cells.map((c) => plainText(c).replace(/\s+/g, ' ').trim()));
+    }
+    return rows;
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -314,9 +516,10 @@
     forceScroll: true,
   };
 
-  const FIELDS = ['role', 'provider', 'model', 'text', 'status', 'errorText'];
+  const FIELDS = ['role', 'provider', 'model', 'text', 'status', 'errorText', 'checksKey'];
 
   function normalize(item) {
+    const checks = Array.isArray(item.checks) && item.checks.length ? item.checks : null;
     return {
       id: String(item.id),
       role: item.role || 'assistant',
@@ -325,6 +528,8 @@
       text: item.text || '',
       status: item.status || 'done',
       errorText: item.errorText || '',
+      checks,
+      checksKey: checks ? JSON.stringify(checks) : '',
     };
   }
 
@@ -345,7 +550,7 @@
       } else {
         const data = normalize(item);
         if (!entry) {
-          entry = { data, el: null, renderedText: null, renderedCaret: false };
+          entry = { data, el: null, renderedText: null, renderedCaret: false, renderedChecks: '' };
           state.entries.set(id, entry);
           state.dirty.add(id);
           if (data.role === 'user') state.forceScroll = true;
@@ -435,11 +640,12 @@
     if (d.role === 'assistant') {
       meta.textContent = d.model ? d.provider + ' · ' + d.model : d.provider;
       const caret = d.status === 'streaming' && d.text.length > 0;
-      if (entry.renderedText !== d.text || entry.renderedCaret !== caret) {
-        body.innerHTML = d.text ? renderMarkdown(d.text) : '';
+      if (entry.renderedText !== d.text || entry.renderedCaret !== caret || entry.renderedChecks !== d.checksKey) {
+        body.innerHTML = d.text ? renderMarkdown(d.text, d.checks) : '';
         if (caret) appendCaret(body);
         entry.renderedText = d.text;
         entry.renderedCaret = caret;
+        entry.renderedChecks = d.checksKey;
       }
     } else {
       meta.textContent = '';
@@ -496,6 +702,30 @@
     return false;
   }
 
+  function flashLabel(button, text) {
+    const original = button.dataset.label || button.textContent;
+    button.dataset.label = original;
+    button.textContent = text;
+    button.classList.add('done');
+    setTimeout(() => {
+      button.textContent = original;
+      button.classList.remove('done');
+    }, 1200);
+  }
+
+  function onTableButton(button) {
+    const block = button.closest('.table-block');
+    const table = block && block.querySelector('table');
+    if (!table) return;
+    const csv = toCSV(tableRows(table));
+    if (button.classList.contains('table-csv-save')) {
+      post({ type: 'saveCSV', csv, name: 'table' });
+    } else if (post({ type: 'copy', text: csv }) ||
+               (root.navigator && root.navigator.clipboard && root.navigator.clipboard.writeText(csv).catch(() => {}))) {
+      flashLabel(button, 'Copied');
+    }
+  }
+
   function onClick(event) {
     const target = event.target;
     if (!target || !target.closest) return;
@@ -504,10 +734,15 @@
       event.preventDefault();
       if (anchor.classList.contains('cite')) {
         const page = parseInt(anchor.dataset.page, 10);
-        if (page >= 1) post({ type: 'goto', page });
+        if (page >= 1) post({ type: 'goto', page, claim: citationClaim(anchor.closest('.cite-group')) });
       } else if (anchor.classList.contains('ext')) {
         post({ type: 'open', url: anchor.href });
       }
+      return;
+    }
+    const tableButton = target.closest('button.table-csv-copy, button.table-csv-save');
+    if (tableButton) {
+      onTableButton(tableButton);
       return;
     }
     const button = target.closest('button.copy');
@@ -529,6 +764,12 @@
     renderMarkdown,
     extractMath,
     linkifyCitations,
+    applyCitationBadges,
+    claimFromText,
+    citationClaim,
+    plainText,
+    tableRows,
+    toCSV,
     escapeHtml,
     copyMessage,
     flushNow() { if (state.scheduled) flush(); },

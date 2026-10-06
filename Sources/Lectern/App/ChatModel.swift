@@ -2,11 +2,18 @@ import Foundation
 import Observation
 import LecternCore
 
-/// Chat state for one document window: both providers' conversations, context building, auth
-/// gating and the purchased-credits guard.
+/// One conversation of a document window (a panel in its ConversationStack): both providers'
+/// conversations, context building, auth gating, the purchased-credits guard, and the panel's title.
 @MainActor @Observable
-final class ChatModel {
+final class ChatModel: Identifiable {
     static let maxAutomaticAuthRetries = 2
+    static let defaultTitle = StoredConversation.defaultTitle
+    /// Longest title kept (automatic or renamed).
+    static let maxTitleLength = 80
+
+    /// Writes a topic title from the first question and answer (ConversationTitler in the app);
+    /// nil keeps the local fallback.
+    typealias Titler = @MainActor (_ question: String, _ answer: String, _ provider: Provider) async -> String?
 
     /// Whole-document budget in estimated tokens for the model the turn uses.
     static func tokenBudget(for provider: Provider, model: String) -> Int {
@@ -20,15 +27,34 @@ final class ChatModel {
         case unknown
     }
 
+    let id: UUID
     let document: ReaderDocument
-    /// Written by PDFReaderView.
-    var readingState: ReadingState
-    /// 0-based; PDFReaderView navigates, then sets it back to nil.
-    var goToPageRequest: Int?
+    /// The window's conversations. It owns what they share: the reading state (written by
+    /// PDFReaderView), citation jumps, focus, and the saved file. Cleared when this one is closed.
+    @ObservationIgnored weak var stack: ConversationStack?
+    /// What the reader is looking at (the stack's).
+    var readingState: ReadingState { stack?.readingState ?? Self.noReadingState }
+
+    /// The panel's title: automatic (from the first question, then the model) until renamed.
+    private(set) var title: String
+    /// The user named this conversation; automatic titles never replace the name.
+    private(set) var titleIsCustom: Bool
+    /// The panel shows only its title bar.
+    var isCollapsed: Bool {
+        didSet { if isCollapsed != oldValue { persist() } }
+    }
+    /// Bumped to put the keyboard focus in this conversation's input (a new conversation).
+    private(set) var inputFocusRequest = 0
+    /// Ask Lectern and the conversation commands go to this conversation.
+    var isFocused: Bool { stack?.focusedID == id }
 
     /// Switching keeps both conversations.
     var provider: Provider {
-        didSet { if provider != oldValue { settingsStore.lastProvider = provider } }
+        didSet {
+            guard provider != oldValue else { return }
+            settingsStore.lastProvider = provider
+            persist()
+        }
     }
 
     /// Settings for `provider`; setting them persists them as the new default.
@@ -50,6 +76,9 @@ final class ChatModel {
 
     private(set) var messages: [ChatMessage] = []
     var isBusy: Bool { activeTurns[provider] != nil }
+    /// A turn is running for either provider.
+    var isAnyBusy: Bool { !activeTurns.isEmpty }
+    var hasUserMessages: Bool { messages.contains { $0.role == .user } }
     var draft = ""
     var attachPageImage = false
     var includeWholeDocument = false
@@ -92,7 +121,7 @@ final class ChatModel {
 
     @ObservationIgnored private let services: [Provider: ProviderService]
     @ObservationIgnored private let settingsStore: SettingsStore
-    @ObservationIgnored private let sessionStore: SessionStore
+    @ObservationIgnored private let titler: Titler?
     @ObservationIgnored private var builders: [Provider: ContextBuilder] = [:]
     @ObservationIgnored private var sessions: [Provider: ChatSession] = [:]
     @ObservationIgnored private var queues: [Provider: [PendingTurn]] = [:]
@@ -100,8 +129,12 @@ final class ChatModel {
     @ObservationIgnored private var conversationIds: [Provider: String] = [:]
     @ObservationIgnored private var pendingNewChat: Set<Provider> = []
     @ObservationIgnored private(set) var isShutDown = false
-    /// Another window already has this PDF (same bytes) open and owns its saved chat and conversations.
-    @ObservationIgnored private let isSecondaryWindow: Bool
+    /// An answer completed in this conversation, so it has been titled (or will keep its title).
+    @ObservationIgnored private var hasTitledAnswer = false
+    /// The latest automatic title (fallback or model), for going back to it after a rename.
+    @ObservationIgnored private var autoTitle: String?
+    /// Bumped by renames and clears, so a model title that arrives afterwards is dropped.
+    @ObservationIgnored private var titleGeneration = 0
     /// A ChatGPT question waits for account/rateLimits/read before the credits guard decides.
     @ObservationIgnored private var codexQuotaCheckRunning = false
     /// The question whose quota read just finished; the guard decides on that read without another.
@@ -109,23 +142,27 @@ final class ChatModel {
     /// How long Stop may wait for the backend to confirm before the session is discarded.
     @ObservationIgnored var interruptTimeout: Duration = .seconds(15)
 
+    /// Made by its ConversationStack, which saves it. `stored` restores a saved conversation.
     /// `secondary`: the same PDF is open in another window. This one shows the saved chat but starts
-    /// new conversations and saves nothing, so the windows never overwrite each other's file or share a
-    /// Claude session / Codex thread.
-    init(document: ReaderDocument, services: [Provider: ProviderService], settings: SettingsStore,
-         sessionStore: SessionStore, secondary: Bool = false) {
+    /// new conversations (the stack saves nothing), so the windows never overwrite each other's file or
+    /// share a Claude session / Codex thread.
+    init(stack: ConversationStack, stored: StoredConversation? = nil, services: [Provider: ProviderService],
+         settings: SettingsStore, secondary: Bool = false, titler: Titler? = nil) {
         precondition(Provider.allCases.allSatisfy { services[$0] != nil }, "a service per provider")
-        self.document = document
+        id = stored?.id ?? UUID()
+        document = stack.document
+        self.stack = stack
         self.services = services
         self.settingsStore = settings
-        self.sessionStore = sessionStore
-        isSecondaryWindow = secondary
-        readingState = ReadingState(currentPage: 0, visiblePages: [], selectionText: nil, selectionPages: [])
-        provider = settings.lastProvider
+        self.titler = titler
+        provider = stored?.provider ?? settings.lastProvider
+        title = stored?.title ?? Self.defaultTitle
+        titleIsCustom = stored?.titleIsCustom ?? false
+        isCollapsed = stored?.collapsed ?? false
         for p in Provider.allCases {
             builders[p] = ContextBuilder(document: document)
         }
-        if let stored = sessionStore.load(contentHash: document.contentHash) {
+        if let stored {
             messages = stored.messages.map(Self.restored)
             if !secondary {
                 for p in Provider.allCases {
@@ -133,10 +170,7 @@ final class ChatModel {
                 }
             }
         }
-        if secondary {
-            append(ChatMessage(role: .notice, provider: provider, text:
-                "This PDF is also open in another window. Questions here start new conversations, and this window's chat won't be saved."))
-        }
+        hasTitledAnswer = messages.contains(where: Self.isAnswer)
         for p in Provider.allCases {
             services[p]?.addAuthObserver { [weak self] state in
                 self?.authChanged(state, for: p)
@@ -144,10 +178,11 @@ final class ChatModel {
         }
     }
 
-    convenience init(document: ReaderDocument, services app: AppServices) {
-        self.init(document: document, services: app.providerServices, settings: app.settings,
-                  sessionStore: app.sessions, secondary: app.isOpen(contentHash: document.contentHash))
-        app.register(self)
+    /// What the stack saves for this conversation.
+    var stored: StoredConversation {
+        StoredConversation(id: id, title: title, titleIsCustom: titleIsCustom, provider: provider,
+                           claudeSessionId: conversationIds[.claude], codexThreadId: conversationIds[.codex],
+                           messages: messages, collapsed: isCollapsed)
     }
 
     // MARK: Actions
@@ -155,19 +190,30 @@ final class ChatModel {
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isBusy, !creditsGuardActive else { return }
-        let p = provider
-        if let issue = service(p).installIssue {
-            append(ChatMessage(role: .notice, provider: p, text: issue))
-            return
-        }
-        isShutDown = false
+        guard submit(question: text, title: text, state: readingState, wholeDocument: includeWholeDocument) else { return }
         draft = ""
-        let message = ChatMessage(role: .user, provider: p, text: text)
-        append(message)
-        queues[p, default: []].append(PendingTurn(
-            userMessageId: message.id, provider: p, question: text, readingState: readingState,
-            attachPageImage: attachPageImage, wholeDocument: includeWholeDocument))
-        pump(p)
+    }
+
+    /// "Ask Lectern" on a PDF selection (`pages` 1-based). The selection is captured now, so the
+    /// question uses it even if the reader's selection changes before the turn starts. While a turn
+    /// runs, the question waits in the queue.
+    func ask(_ action: SelectionAction, selection: String, pages: [Int]) {
+        let text = selection.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        var state = readingState
+        state.selectionText = text
+        state.selectionPages = pages.map { $0 - 1 }
+        let collapsed = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let excerpt = collapsed.count > 80 ? String(collapsed.prefix(80)) + "…" : collapsed
+        submit(question: action.prompt, title: "\(action.title): \u{201C}\(excerpt)\u{201D}", state: state,
+               wholeDocument: includeWholeDocument)
+    }
+
+    /// Presets menu: the preset's question, with the whole document for this send only when it asks.
+    func runPreset(_ preset: ChatPreset) {
+        guard !isBusy, !creditsGuardActive else { return }
+        submit(question: preset.prompt, title: preset.title, state: readingState,
+               wholeDocument: preset.wholeDocument || includeWholeDocument)
     }
 
     func stop() {
@@ -230,15 +276,76 @@ final class ChatModel {
         pump(turn.provider)
     }
 
-    /// 1-based, from [p. N] links. A page the document doesn't have (e.g. a printed page number) is
-    /// reported instead of jumping somewhere unrelated.
-    func goTo(page: Int) {
+    /// 1-based, from [p. N] links; `claim` is the sentence that carried the citation. A page the
+    /// document doesn't have (e.g. a printed page number) is reported instead of jumping somewhere unrelated.
+    func goTo(page: Int, claim: String? = nil) {
         guard page >= 1, page <= document.pageCount else {
             let count = document.pageCount == 1 ? "1 page" : "\(document.pageCount) pages"
             lastWarning = "This document has no page \(page) (it has \(count))."
             return
         }
-        goToPageRequest = page - 1
+        stack?.goTo(page: page, claim: claim)
+    }
+
+    // MARK: Panel
+
+    /// This conversation was clicked or its input got the keyboard focus.
+    func takeFocus() {
+        stack?.focus(id)
+    }
+
+    /// Asks the panel to put the keyboard focus in its input.
+    func requestInputFocus() {
+        inputFocusRequest += 1
+    }
+
+    /// A notice in the transcript (e.g. the second-window note).
+    func appendNotice(_ text: String) {
+        append(ChatMessage(role: .notice, provider: provider, text: text))
+    }
+
+    /// A name chosen by the user; an empty one goes back to the automatic title.
+    func rename(_ newTitle: String) {
+        if let custom = Self.cleanTitle(newTitle) {
+            guard !(titleIsCustom && title == custom) else { return }
+            titleGeneration += 1
+            titleIsCustom = true
+            title = custom
+        } else {
+            guard titleIsCustom else { return }
+            titleGeneration += 1
+            titleIsCustom = false
+            if let autoTitle {
+                title = autoTitle
+            } else if let first = firstExchange() {
+                setAutoTitle(ConversationTitler.fallbackTitle(question: first.question), save: false)
+                requestModelTitle(question: first.question, answer: first.answer, provider: first.provider)
+            } else {
+                title = Self.defaultTitle
+            }
+        }
+        persist()
+    }
+
+    /// "New Chat" in the panel's menu: removes this conversation's messages and starts both providers'
+    /// conversations over. An automatic title goes back to the default. Not while a turn runs.
+    func clearConversation() {
+        guard activeTurns.isEmpty else { return }
+        blockedTurn = nil
+        queues.removeAll()
+        pendingNewChat.removeAll()
+        for p in Provider.allCases {
+            sessions[p]?.resetConversation()
+            conversationIds[p] = nil
+            resetContext(p)
+        }
+        messages.removeAll()
+        lastWarning = nil
+        hasTitledAnswer = false
+        autoTitle = nil
+        titleGeneration += 1
+        if !titleIsCustom { title = Self.defaultTitle }
+        persist()
     }
 
     /// Window closed (or app quitting): stop backend processes and save. A later send starts new
@@ -264,6 +371,24 @@ final class ChatModel {
     }
 
     // MARK: Turn pipeline
+
+    /// Shows `title` as the user's message and queues `question` with the given reading state.
+    @discardableResult
+    private func submit(question: String, title: String, state: ReadingState, wholeDocument: Bool) -> Bool {
+        let p = provider
+        if let issue = service(p).installIssue {
+            append(ChatMessage(role: .notice, provider: p, text: issue))
+            return false
+        }
+        isShutDown = false
+        let message = ChatMessage(role: .user, provider: p, text: title)
+        append(message)
+        queues[p, default: []].append(PendingTurn(
+            userMessageId: message.id, provider: p, question: question, readingState: state,
+            attachPageImage: attachPageImage, wholeDocument: wholeDocument))
+        pump(p)
+        return true
+    }
 
     /// Starts the next queued question for `p` when the provider is idle, signed in and not
     /// blocked by the credits guard.
@@ -405,7 +530,9 @@ final class ChatModel {
                 $0.status = .done
             }
             if let id = sessions[p]?.conversationId { conversationIds[p] = id }
+            titleAfterFirstAnswer(turn, replyId: replyId)
             finish(p)
+            verifyCitations(replyId)
         case .interrupted:
             update(replyId) { $0.status = .interrupted }
             // No answer text: the prompt may never have reached the backend (Stop before turn/start), so
@@ -443,6 +570,77 @@ final class ChatModel {
         // Unknown whether the prompt reached the conversation; send its pages again next time.
         resetContext(p)
         finish(p)
+    }
+
+    // MARK: Titles
+
+    /// The first answer names the conversation: the local fallback at once (saved with the turn), then,
+    /// when Settings allow, a short model title off the critical path.
+    private func titleAfterFirstAnswer(_ turn: ActiveTurn, replyId: UUID) {
+        guard !hasTitledAnswer,
+              let answer = messages.first(where: { $0.id == replyId })?.text, !answer.isEmpty else { return }
+        hasTitledAnswer = true
+        guard !titleIsCustom else { return }
+        let question = messages.first(where: { $0.id == turn.pending.userMessageId })?.text ?? turn.pending.question
+        setAutoTitle(ConversationTitler.fallbackTitle(question: question), save: false)
+        requestModelTitle(question: question, answer: answer, provider: turn.pending.provider)
+    }
+
+    private func requestModelTitle(question: String, answer: String, provider p: Provider) {
+        guard settingsStore.aiConversationTitles, let titler else { return }
+        let generation = titleGeneration
+        let excerpt = String(answer.prefix(4000))
+        Task { [weak self] in
+            let proposed = await titler(question, excerpt, p)
+            guard let self, self.titleGeneration == generation, !self.titleIsCustom,
+                  let clean = Self.cleanTitle(proposed) else { return }
+            self.setAutoTitle(clean, save: true)
+        }
+    }
+
+    private func setAutoTitle(_ newTitle: String, save: Bool) {
+        autoTitle = newTitle
+        guard title != newTitle else { return }
+        title = newTitle
+        if save { persist() }
+    }
+
+    /// The first answered question, for titling a conversation that lost its automatic title.
+    private func firstExchange() -> (question: String, answer: String, provider: Provider)? {
+        guard let i = messages.firstIndex(where: Self.isAnswer) else { return nil }
+        let answer = messages[i]
+        let asked = messages[..<i].last { $0.role == .user && $0.provider == answer.provider }
+            ?? messages.first { $0.role == .user }
+        guard let question = asked?.text else { return nil }
+        return (question, answer.text, answer.provider)
+    }
+
+    private static func isAnswer(_ m: ChatMessage) -> Bool {
+        m.role == .assistant && m.status == .done && !m.text.isEmpty
+    }
+
+    /// One line, collapsed whitespace, at most `maxTitleLength` characters; nil when empty.
+    static func cleanTitle(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let line = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard !line.isEmpty else { return nil }
+        return line.count > maxTitleLength ? String(line.prefix(maxTitleLength - 1)) + "\u{2026}" : line
+    }
+
+    /// Checks the answer's citations against the cited pages (off the main actor) and keeps the
+    /// result with the message, for the transcript's badges.
+    private func verifyCitations(_ id: UUID) {
+        guard let text = messages.first(where: { $0.id == id })?.text, !text.isEmpty else { return }
+        let document = self.document
+        Task { [weak self] in
+            let checks = await Task.detached(priority: .utility) {
+                await CitationVerifier.verify(answer: text, in: document)
+            }.value
+            guard let self, !checks.isEmpty,
+                  self.messages.first(where: { $0.id == id })?.text == text else { return }
+            self.update(id) { $0.citationChecks = checks }
+            self.persist()
+        }
     }
 
     private func finish(_ p: Provider) {
@@ -559,12 +757,9 @@ final class ChatModel {
         return false
     }
 
+    /// The stack saves every conversation of the document (not in a second window on the same bytes).
     private func persist() {
-        guard !isSecondaryWindow else { return }
-        let stored = StoredSession(claudeSessionId: conversationIds[.claude],
-                                   codexThreadId: conversationIds[.codex],
-                                   messages: messages)
-        sessionStore.save(stored, contentHash: document.contentHash)
+        stack?.persist()
     }
 
     private func append(_ message: ChatMessage) {
@@ -579,6 +774,9 @@ final class ChatModel {
     private func setStatus(_ id: UUID, _ status: ChatMessage.Status) {
         update(id) { if $0.status != status { $0.status = status } }
     }
+
+    private static let noReadingState = ReadingState(currentPage: 0, visiblePages: [], selectionText: nil,
+                                                     selectionPages: [])
 
     /// Messages saved mid-turn or while waiting cannot continue after a relaunch.
     private static func restored(_ message: ChatMessage) -> ChatMessage {

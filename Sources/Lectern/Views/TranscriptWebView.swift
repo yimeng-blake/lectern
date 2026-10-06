@@ -1,13 +1,17 @@
 import AppKit
 import LecternCore
 import SwiftUI
+import UniformTypeIdentifiers
 import WebKit
 
 /// The chat transcript, rendered by web/chat.html (Markdown, KaTeX, page links). Messages are
-/// pushed with `Lectern.sync(...)`; the page posts back citation clicks and copy requests.
+/// pushed with `Lectern.sync(...)`; the page posts back citation clicks, copy and CSV-save requests.
 struct TranscriptWebView: NSViewRepresentable {
     let messages: [ChatMessage]
-    let onGoToPage: (Int) -> Void           // 1-based
+    /// Default name for saved tables: "<title> - table.csv".
+    let documentTitle: String
+    /// 1-based page, and the sentence that carried the citation.
+    let onGoTo: (Int, String?) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -29,14 +33,16 @@ struct TranscriptWebView: NSViewRepresentable {
         webView.isInspectable = true
         #endif
 
-        coordinator.onGoToPage = onGoToPage
+        coordinator.onGoTo = onGoTo
+        coordinator.documentTitle = documentTitle
         coordinator.attach(webView)
         coordinator.push(messages)
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        context.coordinator.onGoToPage = onGoToPage
+        context.coordinator.onGoTo = onGoTo
+        context.coordinator.documentTitle = documentTitle
         context.coordinator.push(messages)
     }
 
@@ -70,7 +76,8 @@ extension TranscriptWebView {
             return nil
         }
 
-        var onGoToPage: (Int) -> Void = { _ in }
+        var onGoTo: (Int, String?) -> Void = { _, _ in }
+        var documentTitle = ""
 
         private weak var webView: WKWebView?
         private var loadedURL: URL?
@@ -183,7 +190,9 @@ extension TranscriptWebView {
                   let type = body["type"] as? String else { return }
             switch type {
             case "goto":
-                if let page = (body["page"] as? NSNumber)?.intValue, page >= 1 { onGoToPage(page) }
+                if let page = (body["page"] as? NSNumber)?.intValue, page >= 1 {
+                    onGoTo(page, (body["claim"] as? String).map { String($0.prefix(2_000)) })
+                }
             case "copy":
                 if let text = body["text"] as? String {
                     NSPasteboard.general.clearContents()
@@ -193,12 +202,52 @@ extension TranscriptWebView {
                 if let string = body["url"] as? String, let url = URL(string: string), Self.isExternal(url) {
                     NSWorkspace.shared.open(url)
                 }
+            case "saveCSV":
+                if let csv = body["csv"] as? String {
+                    saveCSV(csv, name: body["name"] as? String ?? "table")
+                }
             case "resync":
                 resetPageState()
                 scheduleFlush()
             default:
                 break
             }
+        }
+
+        /// Save panel for a table from an answer. UTF-8 with a BOM so Excel reads CJK text correctly.
+        private func saveCSV(_ csv: String, name: String) {
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.commaSeparatedText]
+            panel.allowsOtherFileTypes = false
+            panel.canCreateDirectories = true
+            panel.nameFieldStringValue = Self.fileName(title: documentTitle, name: name)
+            let write: (NSApplication.ModalResponse) -> Void = { response in
+                // The panel only offers .csv names; the extension check keeps a PDF from ever being the target.
+                guard response == .OK, let url = panel.url, url.pathExtension.lowercased() == "csv" else { return }
+                var data = Data([0xEF, 0xBB, 0xBF])
+                data.append(Data(csv.utf8))
+                do {
+                    try data.write(to: url, options: .atomic)
+                } catch {
+                    NSAlert(error: error).runModal()
+                }
+            }
+            if let window = webView?.window {
+                panel.beginSheetModal(for: window, completionHandler: write)
+            } else {
+                write(panel.runModal())
+            }
+        }
+
+        static func fileName(title: String, name: String) -> String {
+            let clean = { (s: String) in
+                s.components(separatedBy: CharacterSet(charactersIn: "/:\\").union(.controlCharacters))
+                    .joined(separator: "-").trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            let base = clean(String(title.prefix(120)))
+            let suffix = clean(String(name.prefix(60)))
+            let stem = [base, suffix.isEmpty ? "table" : suffix].filter { !$0.isEmpty }.joined(separator: " - ")
+            return stem + ".csv"
         }
 
         // MARK: WKNavigationDelegate
@@ -252,6 +301,8 @@ extension TranscriptWebView {
         let text: String
         let status: String
         let errorText: String?
+        /// Citation badges, by ordinal.
+        let checks: [WireCheck]?
 
         init(_ message: ChatMessage) {
             id = message.id.uuidString
@@ -261,6 +312,21 @@ extension TranscriptWebView {
             text = message.text
             status = message.status.rawValue
             errorText = message.errorText
+            checks = message.citationChecks.map { $0.map(WireCheck.init) }
+        }
+    }
+
+    struct WireCheck: Encodable, Equatable {
+        let ordinal: Int
+        let pages: [Int]
+        let status: String
+        let missing: [String]
+
+        init(_ check: CitationCheck) {
+            ordinal = check.ordinal
+            pages = check.pages
+            status = check.status.rawValue
+            missing = check.missing
         }
     }
 

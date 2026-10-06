@@ -26,15 +26,22 @@ This guide has CAUTION notices. Read each CAUTION before you do the step that fo
   - [Use the sidebar](#use-the-sidebar)
   - [Zoom and page layout](#zoom-and-page-layout)
   - [Search the PDF](#search-the-pdf)
+  - [Highlights and notes](#highlights-and-notes)
   - [Print the PDF](#print-the-pdf)
   - [Change the appearance](#change-the-appearance)
   - [What Lectern keeps for each PDF](#what-lectern-keeps-for-each-pdf)
 - [Use the chat pane](#use-the-chat-pane)
   - [Ask a question](#ask-a-question)
+  - [Use more than one conversation](#use-more-than-one-conversation)
+  - [Ask about a selection](#ask-about-a-selection)
+  - [Presets](#presets)
   - [Fast](#fast)
   - [Protect purchased credits](#protect-purchased-credits)
   - [Citations](#citations)
+  - [Citation check badges](#citation-check-badges)
+  - [Save a table as CSV](#save-a-table-as-csv)
   - [Context](#context)
+  - [Scanned PDFs (OCR) and table pages](#scanned-pdfs-ocr-and-table-pages)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Settings](#settings)
 - [Privacy and usage](#privacy-and-usage)
@@ -356,14 +363,15 @@ match with ⌘G, ⇧⌘G, Return or the list of matches.
 
 ### Use the sidebar
 
-The sidebar shows small images of the pages (thumbnails) or the table of contents of the PDF. During a search, the
-sidebar shows the search results.
+The sidebar shows small images of the pages (thumbnails), the table of contents of the PDF or your highlights. During
+a search, the sidebar shows the search results.
 
 | Command (View menu) | Shortcut | Result |
 | --- | --- | --- |
 | Hide Sidebar / Show Sidebar | ⌥⌘1 | Removes the sidebar from the window, or shows it again. |
 | Thumbnails | ⌥⌘2 | Shows the page thumbnails. Click a thumbnail to go to that page. |
 | Table of Contents | ⌥⌘3 | Shows the table of contents. Click an entry to go to it. You can use this command only if the PDF has a table of contents. |
+| Highlights | ⌥⌘4 | Shows your highlights and notes. Refer to [Highlights and notes](#highlights-and-notes). |
 
 ### Zoom and page layout
 
@@ -417,6 +425,49 @@ Notes:
   "1 of 5000+".
 - The search colors do not mark text in the PDF. Lectern does not send the matches to the provider as marked text.
 
+### Highlights and notes
+
+You can mark text in the PDF with a color (a highlight). You can also add a note to a highlight. Lectern keeps
+highlights and notes in the Lectern folder, not in the PDF. The PDF file does not change.
+
+To highlight text, do these steps:
+
+1. Select the text in the PDF.
+2. Hold the Control key and click the selected text.
+3. Select **Highlight**, and then select a color.
+   - You can also select **Edit > Highlight Selection** (⌃⌘H). This command uses yellow.
+
+To add a note, do these steps:
+
+1. Select the text in the PDF.
+2. Hold the Control key and click the selected text.
+3. Select **Add Note…**.
+   - You can also select **Edit > Add Note to Selection…**.
+4. Type the note.
+5. Click **Save**. Lectern highlights the text in yellow and adds the note.
+
+To change a highlight, hold the Control key and click it. Then select **Add Note…** (or **Edit Note…**), **Change
+Color** or **Remove Highlight**.
+
+To see all highlights, select **View > Highlights** (⌥⌘4). The sidebar shows the page, the text and the note of each
+highlight. Click a highlight to go to it. To change or delete a highlight in the list, hold the Control key and click
+it.
+
+To export the highlights to a Markdown file, do these steps:
+
+1. Select **File > Export Highlights…** (⇧⌘E).
+2. Select a folder.
+3. Click **Save**.
+
+The file contains the text, the page number and the note of each highlight. If the PDF has no highlights, **Export
+Highlights…** is gray.
+
+Notes:
+
+- The thumbnails and the printed pages also show the highlights.
+- Lectern does not send highlights to Claude or ChatGPT. The page images that Lectern sends do not show highlights.
+- If two windows show the same PDF, the two windows show the same highlights.
+
 ### Print the PDF
 
 To print the PDF, select **File > Print…** (⌘P). macOS shows the Print dialog.
@@ -445,8 +496,10 @@ For each PDF, Lectern keeps these settings and uses them again when you open the
 - the last page
 - the zoom
 - the page layout
-- the sidebar: shown or not shown, and Thumbnails or Table of Contents
+- the sidebar: shown or not shown, and Thumbnails, Table of Contents or Highlights
 - the chat pane: shown or not shown
+- the conversations: their order, titles and collapsed conversations
+- the highlights and notes
 
 Lectern keeps these settings in the Lectern folder (refer to [Privacy and usage](#privacy-and-usage)), never in the
 PDF. Lectern uses the contents of the PDF, not the file name, to find these settings. Because of this, a copy of the
@@ -454,20 +507,24 @@ PDF with a different name or folder gets the same settings and conversations. Le
 
 ## Use the chat pane
 
-For each PDF, Lectern keeps one conversation with each provider. When you open the PDF again, Lectern shows these
-conversations again. You can select a different provider at any time.
+The chat pane can have 1 to 4 conversations about the PDF, one above the other. Refer to
+[Use more than one conversation](#use-more-than-one-conversation). In each conversation, you can select a different
+provider at any time. Lectern keeps the messages of both providers. When you open the PDF again, Lectern shows the
+conversations again.
 
 ### Ask a question
 
 1. Type your question in the message field at the bottom of the chat pane. The empty field shows "Ask about this
    document…".
 2. Press Return to send the question. To start a new line in the question, press ⇧Return or ⌥Return.
-3. To stop an answer, click the Stop button or press ⌘. (Command-period).
+3. To stop an answer, click the Stop button or press ⌘. (Command-period). ⌘. stops only the focused conversation.
 
 The chat pane has these controls:
 
 | Control | Location | Result |
 | --- | --- | --- |
+| Title bar | Top of each conversation | Shows the title, the arrow that collapses the conversation, and the **Conversation** menu (⋯ button). |
+| **New Conversation** | Bottom of the chat pane | Adds a conversation below the others. |
 | Provider picker (Claude or ChatGPT) | Chat header | Selects the provider. Each provider has a separate conversation about the PDF. |
 | Model picker | Chat header | Selects the model. |
 | Reasoning effort picker | Chat header | Selects the reasoning effort. |
@@ -485,6 +542,130 @@ reasoning effort and the tier with each message. Because of this, ChatGPT messag
 settings in your Codex configuration (for example a priority tier).
 
 Settings > Models sets the default values. A change in the chat header also becomes the new default value.
+
+### Use more than one conversation
+
+You can have up to 4 conversations about a PDF, for example one for each topic. Lectern shows them one above the
+other in the chat pane. Each conversation has a title bar, a provider, a model and messages. The providers do not see
+the messages of the other conversations.
+
+**Add a conversation**
+
+1. Click **New Conversation** at the bottom of the chat pane.
+   - You can also select **File > New Conversation** (⌥⌘N).
+
+Lectern adds the conversation below the others and puts the cursor in its message field. **New Conversation** is gray
+when the PDF has 4 conversations.
+
+**Focus a conversation**
+
+**Ask Lectern**, ⌘. and **File > Close Conversation** use the focused conversation.
+
+1. Click in the conversation.
+
+When you type in a message field, that conversation also becomes the focused conversation. If the PDF has 2 or more
+conversations, the title bar of the focused conversation has the accent color.
+
+**Rename a conversation**
+
+1. Double-click the title.
+   - You can also click the **Conversation** menu (⋯ button) in the title bar, and then select **Rename…**.
+2. Type the new title.
+3. Press Return.
+
+To cancel, press Esc. To use the automatic title again, delete all of the text. Then press Return.
+
+**Collapse or expand a conversation**
+
+1. Click the arrow at the left side of the title bar.
+
+A collapsed conversation shows only its title bar and the name of its provider. Its messages do not change. To change
+the height of two conversations, drag the line between them.
+
+**Move a conversation**
+
+1. Click the **Conversation** menu (⋯ button) in the title bar.
+2. Select **Move Up** or **Move Down**.
+
+**Close a conversation**
+
+> [!CAUTION]
+> Close a conversation only if you do not have to keep its messages. After you close it, you cannot get its messages
+> again.
+
+1. Click the **Conversation** menu (⋯ button) in the title bar.
+   - You can also select **File > Close Conversation** (⌥⌘W). This command closes the focused conversation.
+2. Select **Close Conversation**.
+3. If the conversation has messages, click **Close Conversation** in the dialog.
+
+You cannot close the last conversation. If an answer is in progress, Lectern stops it. **New Chat** in the
+**Conversation** menu removes all messages of the conversation, but keeps the conversation and a title that you typed.
+
+**Automatic titles**
+
+After the first answer, Lectern gives the conversation a short title from the first question. Then Lectern asks the
+provider for a title of 2 to 6 words, in the language of the question. For Claude, Lectern uses Haiku. For ChatGPT,
+Lectern uses a small model from the model list of Codex, with low reasoning effort. If the provider sends no title in
+20 seconds, Lectern keeps the title from the question. A title that you typed does not change.
+
+Each title uses one small message from the included usage of your plan. A ChatGPT title never uses purchased credits.
+If Lectern cannot read your ChatGPT usage, or you used all of it, Lectern keeps the title from the question. To use
+only titles from the first question, set **AI conversation titles** to off (Settings > Advanced > Conversations).
+
+**Which conversation gets the question**
+
+- **Ask Lectern** sends the question to the focused conversation. If that conversation is collapsed, Lectern expands
+  it.
+- The **Presets** button of a conversation sends the preset to that conversation.
+- The message field of a conversation sends the question to that conversation.
+
+Lectern keeps the conversations, their order, their titles and the collapsed conversations for the PDF. When you open
+the PDF again, the expanded conversations have equal heights.
+
+### Ask about a selection
+
+You can send a prepared question about the text that you marked in the PDF.
+
+1. Select the text in the PDF.
+2. Hold the Control key and click the selected text.
+3. Select **Ask Lectern**, and then select a command.
+   - You can also select **Edit > Ask Lectern**.
+
+| Command | Question that Lectern sends |
+| --- | --- |
+| **Explain** | Explain the text in plain language, in the context of the PDF. |
+| **Summarize** | Give a summary of the text in 2 to 4 bullet points, with all numbers. |
+| **Define Terms** | Define the technical terms, acronyms and metrics in the text. |
+| **Translate to Chinese** | Translate the text into Simplified Chinese. |
+
+Lectern shows the chat pane if it is hidden. The chat pane shows the command and the start of the text, for example
+"Explain: “Gross margin for the quarter…”". Lectern sends the question to the focused conversation, with the provider
+that you selected in it. If an answer is in progress, Lectern sends the question after that answer.
+
+### Presets
+
+Presets are prepared questions about the PDF. The **Presets** button (the star button) is below the message field.
+Lectern sends the preset to the conversation of that button.
+
+1. Click the **Presets** button.
+2. Select a preset. Lectern sends its question.
+
+| Group | Preset | Result | Pages |
+| --- | --- | --- | --- |
+| General | **Summarize This Page** | A summary of the current page in 3 to 6 bullet points | Current page |
+| General | **Summarize the Document** | The purpose, the main points and the key numbers of the PDF | Whole document |
+| General | **Key Takeaways** | The 5 most important points | Current page |
+| General | **Weak Points in the Argument** | Claims without support, and gaps in the evidence | Current page |
+| Finance | **KPI Table** | A table of the financial and operational metrics | Whole document |
+| Finance | **Guidance vs. Prior Period** | A table that compares the guidance with the results of the prior period | Whole document |
+| Finance | **Segment / Region Breakdown** | A table of revenue by segment and by region | Whole document |
+| Finance | **Risks and Red Flags** | The risks, one-time items and red flags | Whole document |
+
+"Current page" sends the current page and the pages near it. "Whole document" uses **Whole document** for this
+question only. The **Whole document** button does not change. Refer to [Context](#context).
+
+**Presets** is gray when an answer is in progress, or when you are not signed in. It is also gray when Lectern waits
+for your decision about purchased credits.
 
 ### Fast
 
@@ -510,11 +691,46 @@ asks you first. Lectern also asks if it cannot read your usage. The banner shows
 
 ### Citations
 
-Links such as `[p. N]` in the answers go to that page. To go to the location before the jump, select **Go > Back**
-(⌘[).
+Links such as `[p. N]` in the answers go to that page. Lectern also shows the passage that supports the sentence in
+orange for 2.5 seconds. To go to the location before the jump, select **Go > Back** (⌘[).
 
 If the PDF does not have that page, Lectern stays on the same page. Lectern then shows the cause, for example "This
 document has no page 400 (it has 340 pages)."
+
+### Citation check badges
+
+When an answer is complete, Lectern examines each citation. Lectern finds the numbers and the "quoted phrases" in the
+sentence of the citation. Then Lectern looks for them in the text of the cited pages.
+
+| Badge | Result |
+| --- | --- |
+| ✓ | Lectern found all numbers and quoted phrases of the sentence on the cited pages. |
+| ⚠ | Lectern did not find one or more of them, or the PDF does not have the cited page. |
+| No badge | The sentence has no numbers and no quoted phrases. |
+
+To see the items that Lectern did not find, put the pointer on ⚠. Lectern shows them, for example "Not found on
+p. 4: 412.9, 63%".
+
+Notes:
+
+- A ✓ does not show that the claim is correct. It shows only that the numbers and phrases are on the cited pages.
+- Lectern compares numbers in different forms, for example "$1.2 billion" and "1,200" in a table in millions.
+- If Lectern cannot match the badges to the citations, the answer has no badges.
+- Lectern examines only new answers. Answers from an earlier version of Lectern have no badges.
+
+### Save a table as CSV
+
+You can copy a table from an answer, or keep it as a CSV file.
+
+1. Put the pointer on the table in the answer. Lectern shows two buttons on the table.
+2. Click **Copy CSV** or **Save CSV…**.
+   - **Copy CSV** copies the table. Paste it in a spreadsheet.
+   - **Save CSV…** opens the Save dialog. The file name is "PDF name - table.csv".
+3. For **Save CSV…**, select a folder.
+4. Click **Save**.
+
+Lectern removes the text format (for example bold), but it keeps the numbers as the answer shows them. If a cell can
+start a spreadsheet formula (for example "=SUM(A1:A3)"), Lectern adds an apostrophe (') before the cell text.
 
 ### Context
 
@@ -526,12 +742,33 @@ With each question, Lectern sends:
 
 Lectern sends each page only one time in each conversation.
 
-**Attach page image** sends an image of the current page. Use it for charts, scans and tables. If the current page
-has less than 400 characters of text, Lectern attaches the image automatically.
+**Attach page image** sends an image of the current page. Use it for charts, scans and tables. Lectern attaches the
+image automatically if the current page has less than 400 characters of text. Lectern also attaches it for scanned
+pages and table pages. Refer to [Scanned PDFs (OCR) and table pages](#scanned-pdfs-ocr-and-table-pages).
 
 If the text of all pages is less than the token limit, **Whole document** sends all pages. The token limit is
 approximately 300k tokens for Claude, 140k tokens for Claude Haiku and 150k tokens for ChatGPT. If the PDF is larger,
 Lectern sends the pages that are most applicable to the question.
+
+### Scanned PDFs (OCR) and table pages
+
+A scanned page is an image, and it has no text. Lectern finds the text on a scanned page with optical character
+recognition (OCR) on your Mac. Lectern uses OCR on a page if the page has almost no text.
+
+- Lectern sends the OCR text with the question. Lectern tells the provider that the text comes from OCR.
+- Lectern also sends the image of the current page, one time in each conversation.
+- **Whole document** also uses the OCR text.
+- Lectern keeps the OCR text in the `cache` folder. Lectern does OCR on each page only one time.
+
+Notes:
+
+- The search field (⌘F) does not find OCR text. You cannot select OCR text in the PDF.
+- A citation to a scanned page goes to the page, but Lectern does not show the passage.
+- For a large scanned PDF, the first question with **Whole document** can be slow. Lectern does OCR on all pages first.
+
+The text of a PDF does not keep the columns of a table. If most of the current page is a table, Lectern sends an
+image of the page with the text. The provider can then read the columns. Lectern sends the image one time in each
+conversation.
 
 ## Keyboard shortcuts
 
@@ -539,15 +776,22 @@ Lectern sends the pages that are most applicable to the question.
 | --- | --- | --- |
 | Lectern | Settings… | ⌘, |
 | File | Open… | ⌘O |
+| File | New Conversation | ⌥⌘N |
 | File | Close | ⌘W |
+| File | Close Conversation (the focused conversation) | ⌥⌘W |
+| File | Export Highlights… | ⇧⌘E |
 | File | Print… | ⌘P |
 | Edit > Find | Find… (moves the cursor to the search field) | ⌘F |
 | Edit > Find | Find Next | ⌘G (Return in the search field) |
 | Edit > Find | Find Previous | ⇧⌘G (⇧Return in the search field) |
 | Edit > Find | Use Selection for Find | ⌘E |
+| Edit | Ask Lectern (Explain, Summarize, Define Terms, Translate to Chinese) | — |
+| Edit | Highlight Selection | ⌃⌘H |
+| Edit | Add Note to Selection… | — |
 | View | Hide Sidebar / Show Sidebar | ⌥⌘1 |
 | View | Thumbnails | ⌥⌘2 |
 | View | Table of Contents | ⌥⌘3 |
+| View | Highlights | ⌥⌘4 |
 | View | Hide Chat / Show Chat | ⌃⌘C |
 | View | Actual Size | ⌘0 |
 | View | Zoom to Fit | ⌘9 |
@@ -563,7 +807,7 @@ Lectern sends the pages that are most applicable to the question.
 | Search field or PDF | Stop the search | Esc |
 | Chat pane | Send the question | Return |
 | Chat pane | Start a new line in the question | ⇧Return or ⌥Return |
-| Chat pane | Stop the answer | ⌘. |
+| Chat pane | Stop the answer (the focused conversation) | ⌘. |
 
 ## Settings
 
@@ -587,6 +831,7 @@ Lectern sends the pages that are most applicable to the question.
 | Advanced (Claude Code CLI, Codex) | **Detected** | Shows the CLI that Lectern found. **Reveal in Finder** shows it in Finder. | — |
 | Advanced (Codex) | **Codex home** | Selects **Isolated** or **Shared**. Refer to [Select Isolated or Shared](#select-isolated-or-shared-chatgpt). | Isolated |
 | Advanced (Context) | **Current page ± N pages** | Sets the quantity of pages on each side of the current page that Lectern sends (0 to 3). | ± 1 page |
+| Advanced (Conversations) | **AI conversation titles** | After the first answer, the provider gives the conversation a title with a small model. If it is off, Lectern makes the title from the first question. | On |
 
 ## Privacy and usage
 
@@ -594,16 +839,20 @@ Lectern sends the pages that are most applicable to the question.
   and **Whole document** with large PDFs use more of your plan.
 - Lectern does not send the PDF file. It gets the text from the PDF on your Mac with PDFKit. It sends only the
   applicable pages to the provider that you selected. If a message has a page image, Lectern also sends that image.
+- Lectern does OCR on your Mac with the Vision framework of macOS. It does not send scanned pages to an OCR service.
 - Lectern runs Claude with `--safe-mode` and with no tools. Lectern runs Codex in a read-only sandbox. Lectern gives
   the answer "no" to all approval requests. Because of this, Codex cannot change files.
 - Lectern keeps conversations in `~/Library/Application Support/Lectern/sessions`. Lectern makes the name of each file
   from a hash of the contents of the PDF. The same file also keeps the viewer settings of that PDF (last page, zoom,
   layout, sidebar and chat pane).
 - The CLIs also keep a session history on your Mac, the same as when you use them in Terminal.
+- If **AI conversation titles** is on, Lectern sends the first question and the start of the first answer again.
+  This separate message asks the provider only for a title. The CLIs do not keep these title messages in their session history.
 - In Isolated mode, Codex keeps the Lectern ChatGPT sign-in in `~/Library/Application Support/Lectern/codex-home`.
   Codex uses this folder as it uses `~/.codex` for your Codex CLI. Lectern does not read the sign-in file in this
   folder.
-- Lectern keeps page images and other temporary files in `~/Library/Application Support/Lectern/cache`.
+- Lectern keeps highlights and notes in `~/Library/Application Support/Lectern/highlights`, one file for each PDF.
+- Lectern keeps page images, OCR text and other temporary files in `~/Library/Application Support/Lectern/cache`.
 - Lectern never signs you out of Claude. A Claude sign-out also signs you out of Claude Code in Terminal.
 - For ChatGPT, **Sign out** in Settings removes only the Lectern sign-in (Isolated mode). The ChatGPT app and the
   Codex CLI stay signed in.
@@ -768,7 +1017,9 @@ Lectern does not keep the conversations of the second window.
 
 ## Install a new version or remove Lectern
 
-Lectern keeps your conversations and settings when you install a new version.
+Lectern keeps your conversations and settings when you install a new version. This version keeps the conversations of
+each PDF in a new file format. An older version of Lectern does not show these conversations. If you open the PDF in an
+older version, it can remove them.
 
 ### Install a new version (Option A)
 
@@ -816,6 +1067,10 @@ swift run lectern-probe              # headless backend and context checks (list
 # end to end, the way a document window asks (never starts a sign-in):
 .build/debug/lectern-probe ask --provider claude --pdf doc.pdf --page 2 --model haiku --effort low "question"
 .build/debug/lectern-probe ask --provider codex --home shared --pdf doc.pdf --page 2 --effort low "question"
+# citation checks, passage search, OCR and table pages:
+.build/debug/lectern-probe verify-citations --pdf doc.pdf --answer-file answer.md
+.build/debug/lectern-probe locate --pdf doc.pdf --page 2 --claim "Gross margin was 61.3%"
+.build/debug/lectern-probe pdf-info --pdf doc.pdf
 ```
 
 - If `xcode-select` uses an older Xcode, put `DEVELOPER_DIR=/Library/Developer/CommandLineTools` before the `swift`

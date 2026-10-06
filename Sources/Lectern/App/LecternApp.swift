@@ -19,9 +19,11 @@ struct LecternApp: App {
     }
 }
 
-/// File menu: Open…, Open Recent, Close and Print… (there is nothing to save); Edit > Find; the
-/// viewer's View items; the Go menu. Viewer commands act on the key reader window's ReaderController
-/// and are disabled when no reader window is key.
+/// File menu: Open…, Open Recent, New Conversation, Close, Close Conversation, Export Highlights…
+/// and Print… (there is nothing to save);
+/// Edit > Find, Ask Lectern, Highlight Selection and Add Note…; the viewer's View items; the Go menu.
+/// Viewer commands act on the key reader window's ReaderController and are disabled when no reader
+/// window is key.
 struct ReaderCommands: Commands {
     let windows: ReaderWindowManager
 
@@ -30,6 +32,11 @@ struct ReaderCommands: Commands {
         guard let reader = windows.activeReader, reader.isReady else { return nil }
         return reader
     }
+
+    private var hasSelection: Bool { reader?.hasTextSelection ?? false }
+
+    /// The key reader window's conversations, once its document is showing.
+    private var conversations: ConversationStack? { reader == nil ? nil : windows.activeConversations }
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -45,11 +52,33 @@ struct ReaderCommands: Commands {
                 Button("Clear Menu") { windows.clearRecentFiles() }
                     .disabled(windows.recentFiles.isEmpty)
             }
+            Divider()
+            // Another conversation about this document, below the others (shows the chat if hidden).
+            Button("New Conversation") {
+                guard let conversations, conversations.canAddConversation else { return }
+                reader?.setChatVisible(true)
+                conversations.addConversation()
+            }
+            .keyboardShortcut("n", modifiers: [.command, .option])
+            .disabled(!(conversations?.canAddConversation ?? false))
         }
         // Replacing .saveItem drops Save/Duplicate/Rename/Revert, and also the standard Close.
         CommandGroup(replacing: .saveItem) {
             Button("Close") { NSApp.keyWindow?.performClose(nil) }
                 .keyboardShortcut("w")
+            // The focused conversation (asks first when it has messages); the last one stays.
+            Button("Close Conversation") {
+                guard let conversations, let focused = conversations.focused else { return }
+                ConversationActions.close(focused, in: conversations)
+            }
+            .keyboardShortcut("w", modifiers: [.command, .option])
+            .disabled(!(conversations?.canCloseConversation ?? false) || reader?.chatVisible == false)
+        }
+        // Markdown of the highlights and notes, to a file the user picks; the PDF is never written.
+        CommandGroup(replacing: .importExport) {
+            Button("Export Highlights\u{2026}") { reader?.exportHighlights() }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(!(reader?.hasHighlights ?? false))
         }
         // Prints the PDF itself (PDFDocument's print operation), never the view.
         CommandGroup(replacing: .printItem) {
@@ -70,6 +99,20 @@ struct ReaderCommands: Commands {
                     .keyboardShortcut("e")
             }
             .disabled(reader == nil)
+            Divider()
+            Menu {
+                ForEach(SelectionAction.allCases) { action in
+                    Button(action.title) { reader?.ask(action) }
+                }
+            } label: {
+                Label { Text("Ask Lectern") } icon: { Image(nsImage: LecternMark.menuImage) }
+            }
+            .disabled(!hasSelection)
+            Button("Highlight Selection") { reader?.highlightSelection() }
+                .keyboardShortcut("h", modifiers: [.command, .control])
+                .disabled(!hasSelection)
+            Button("Add Note to Selection\u{2026}") { reader?.addNoteToSelection() }
+                .disabled(!hasSelection)
         }
         ViewerCommands(reader: reader)
         GoCommands(reader: reader)
@@ -91,6 +134,9 @@ private struct ViewerCommands: Commands {
             Toggle("Table of Contents", isOn: sidebarBinding(.contents))
                 .keyboardShortcut("3", modifiers: [.command, .option])
                 .disabled(!(reader?.hasOutline ?? false))
+            Toggle("Highlights", isOn: sidebarBinding(.highlights))
+                .keyboardShortcut("4", modifiers: [.command, .option])
+                .disabled(reader == nil)
             Divider()
             Button(reader?.chatVisible == false ? "Show Chat" : "Hide Chat") { reader?.toggleChat() }
                 .keyboardShortcut("c", modifiers: [.command, .control])

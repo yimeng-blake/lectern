@@ -374,6 +374,12 @@ private struct AdvancedSettings: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("Conversations") {
+                Toggle("AI conversation titles", isOn: $settings.aiConversationTitles)
+                Text("After a conversation's first answer, its provider's lightest model names it in a few words. ChatGPT titles never use purchased credits. Off: titles come from the first question.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
     }
