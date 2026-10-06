@@ -1,45 +1,71 @@
 import LecternCore
 import SwiftUI
 
-/// Provider / model / effort / tier pickers, account and quota status, and New chat.
-/// Picker changes are written to `model.settings`, whose setter persists them as the new default.
+/// Provider / model / effort / tier pickers, account and quota status, and New chat. A compact (narrow)
+/// panel has one row: provider, model and effort in one menu, and the account as a colored dot with the
+/// usage. Picker changes are written to `model.settings`, whose setter persists them as the new default.
 @MainActor
 struct ChatHeaderView: View {
     @Bindable var model: ChatModel
+    var compact = false
+
+    private var quota: QuotaSnapshot? {
+        guard let quota = model.quota, !quota.windows.isEmpty || quota.includedUsageExhausted else { return nil }
+        return quota
+    }
+
+    private var resolvedModel: String? {
+        guard let resolved = model.resolvedModel, !resolved.isEmpty else { return nil }
+        return resolved
+    }
+
+    private var offersFastTier: Bool { model.provider == .codex && model.selectedModel?.fastTierId != nil }
 
     var body: some View {
+        Group {
+            if compact {
+                HStack(spacing: 8) {
+                    settingsMenu
+                    Spacer(minLength: 4)
+                    AccountDot(state: model.authState, quota: quota)
+                    newChatButton
+                }
+            } else {
+                wideBody
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, compact ? 7 : 8)
+    }
+
+    private var wideBody: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
-                providerMenu
-                modelMenu
-                effortMenu
-                if model.provider == .codex, model.selectedModel?.fastTierId != nil {
-                    fastToggle
+                // The separate pickers, or the combined menu when long names don't fit.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        providerMenu
+                        modelMenu
+                        effortMenu
+                        if offersFastTier { fastToggle }
+                    }
+                    settingsMenu
                 }
                 Spacer(minLength: 4)
-                Button {
-                    model.newChat()
-                } label: {
-                    Image(systemName: "square.and.pencil")
-                }
-                .buttonStyle(.borderless)
-                .help("New chat")
-                .accessibilityLabel("New chat")
-                .disabled(model.isBusy)
+                newChatButton
             }
-            .controlSize(.small)
 
             HStack(spacing: 6) {
                 AccountChip(state: model.authState)
                     .layoutPriority(-1)
-                if let quota = model.quota, !quota.windows.isEmpty || quota.includedUsageExhausted {
+                if let quota {
                     QuotaChip(quota: quota)
                 }
                 Spacer(minLength: 4)
-                if let resolved = model.resolvedModel, !resolved.isEmpty {
-                    Text(resolved)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                if let resolvedModel {
+                    Text(resolvedModel)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .help("Model the backend reported for the latest answer")
@@ -47,23 +73,67 @@ struct ChatHeaderView: View {
                 }
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+    }
+
+    private var newChatButton: some View {
+        Button {
+            model.newChat()
+        } label: {
+            Image(systemName: "square.and.pencil")
+        }
+        .buttonStyle(.borderless)
+        .help("New chat")
+        .accessibilityLabel("New chat")
+        .disabled(model.isBusy)
+    }
+
+    // MARK: Combined menu (compact)
+
+    /// e.g. "Claude · Opus · Medium" (truncated at the end when narrow).
+    private var settingsSummary: String {
+        var parts = [model.provider.displayName, modelTitle]
+        if !model.settings.effort.isEmpty {
+            parts.append(Self.effortName(model.settings.effort))
+        } else if let fallback = model.selectedModel?.defaultEffort, !fallback.isEmpty {
+            parts.append(Self.effortName(fallback))
+        }
+        if offersFastTier, model.settings.fastTier { parts.append("Fast") }
+        return parts.joined(separator: " \u{00B7} ")
+    }
+
+    private var settingsMenu: some View {
+        Menu {
+            Section("Provider") { providerItems }
+            Section("Model") { modelItems }
+            Section("Reasoning Effort") { effortItems }
+            if offersFastTier {
+                Section {
+                    Toggle("Fast (Priority Tier)", isOn: fastBinding)
+                }
+            }
+            if let resolvedModel {
+                Section {
+                    Text("Last answer: \(resolvedModel)")
+                }
+            }
+        } label: {
+            Text(settingsSummary)
+                .fontWeight(.medium)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.borderless)
+        .layoutPriority(1)
+        .help("Provider, model and reasoning effort: \(settingsSummary)")
+        .accessibilityLabel("Provider, model and effort: \(settingsSummary)")
     }
 
     // MARK: Provider
 
     private var providerMenu: some View {
         Menu {
-            ForEach(Provider.allCases) { provider in
-                Toggle(isOn: Binding(
-                    get: { model.provider == provider },
-                    set: { if $0 { model.provider = provider } }
-                )) {
-                    Text(provider.displayName)
-                    Text(providerStatus(provider))
-                }
-            }
+            providerItems
         } label: {
             Text(model.provider.displayName)
                 .fontWeight(.semibold)
@@ -73,6 +143,18 @@ struct ChatHeaderView: View {
         .fixedSize()
         .help("AI provider — each keeps its own conversation about this document")
         .accessibilityLabel("Provider: \(model.provider.displayName)")
+    }
+
+    @ViewBuilder private var providerItems: some View {
+        ForEach(Provider.allCases) { provider in
+            Toggle(isOn: Binding(
+                get: { model.provider == provider },
+                set: { if $0 { model.provider = provider } }
+            )) {
+                Text(provider.displayName)
+                Text(providerStatus(provider))
+            }
+        }
     }
 
     /// Menu subtitle, e.g. "Signed in · Max", "Signed out", "Answering…".
@@ -114,21 +196,7 @@ struct ChatHeaderView: View {
 
     private var modelMenu: some View {
         Menu {
-            let options = modelOptions
-            if options.isEmpty {
-                Text("Loading models…")
-            }
-            ForEach(options) { option in
-                Toggle(isOn: Binding(
-                    get: { selectedModelId == option.id },
-                    set: { if $0 { select(option) } }
-                )) {
-                    Text(title(for: option))
-                    if let detail = option.detail, !detail.isEmpty {
-                        Text(detail)
-                    }
-                }
-            }
+            modelItems
         } label: {
             Text(modelTitle)
         }
@@ -137,6 +205,24 @@ struct ChatHeaderView: View {
         .fixedSize()
         .help("Model")
         .accessibilityLabel("Model: \(modelTitle)")
+    }
+
+    @ViewBuilder private var modelItems: some View {
+        let options = modelOptions
+        if options.isEmpty {
+            Text("Loading models…")
+        }
+        ForEach(options) { option in
+            Toggle(isOn: Binding(
+                get: { selectedModelId == option.id },
+                set: { if $0 { select(option) } }
+            )) {
+                Text(title(for: option))
+                if let detail = option.detail, !detail.isEmpty {
+                    Text(detail)
+                }
+            }
+        }
     }
 
     private func select(_ option: ModelOption) {
@@ -161,20 +247,7 @@ struct ChatHeaderView: View {
 
     private var effortMenu: some View {
         Menu {
-            Toggle(isOn: effortBinding("")) {
-                if let fallback = model.selectedModel?.defaultEffort, !fallback.isEmpty {
-                    Text("Default (\(Self.effortName(fallback)))")
-                } else {
-                    Text("Default")
-                }
-            }
-            let choices = model.effortChoices.filter { !$0.isEmpty }
-            if !choices.isEmpty {
-                Divider()
-            }
-            ForEach(choices, id: \.self) { effort in
-                Toggle(Self.effortName(effort), isOn: effortBinding(effort))
-            }
+            effortItems
         } label: {
             Label(effortTitle, systemImage: "gauge.medium")
         }
@@ -183,6 +256,23 @@ struct ChatHeaderView: View {
         .fixedSize()
         .help("Reasoning effort")
         .accessibilityLabel("Reasoning effort: \(effortTitle)")
+    }
+
+    @ViewBuilder private var effortItems: some View {
+        Toggle(isOn: effortBinding("")) {
+            if let fallback = model.selectedModel?.defaultEffort, !fallback.isEmpty {
+                Text("Default (\(Self.effortName(fallback)))")
+            } else {
+                Text("Default")
+            }
+        }
+        let choices = model.effortChoices.filter { !$0.isEmpty }
+        if !choices.isEmpty {
+            Divider()
+        }
+        ForEach(choices, id: \.self) { effort in
+            Toggle(Self.effortName(effort), isOn: effortBinding(effort))
+        }
     }
 
     private func effortBinding(_ effort: String) -> Binding<Bool> {
@@ -207,15 +297,19 @@ struct ChatHeaderView: View {
 
     // MARK: Fast tier
 
-    private var fastToggle: some View {
-        Toggle(isOn: Binding(
+    private var fastBinding: Binding<Bool> {
+        Binding(
             get: { model.settings.fastTier },
             set: { isOn in
                 var settings = model.settings
                 settings.fastTier = isOn
                 model.settings = settings
             }
-        )) {
+        )
+    }
+
+    private var fastToggle: some View {
+        Toggle(isOn: fastBinding) {
             Label("Fast", systemImage: "hare")
         }
         .toggleStyle(.button)
@@ -225,66 +319,9 @@ struct ChatHeaderView: View {
 
 // MARK: - Chips
 
-/// Account status; opens Settings (Accounts) on click.
-@MainActor
-private struct AccountChip: View {
-    let state: AuthState
-
-    var body: some View {
-        SettingsLink {
-            // Narrow panes get progressively shorter labels instead of an unreadable "r…x".
-            ViewThatFits(in: .horizontal) {
-                chip(Text(text))
-                chip(Text(text).lineLimit(1).truncationMode(.middle).frame(width: 110, alignment: .leading))
-                if let shortText { chip(Text(shortText)) }
-                chip(EmptyView())
-            }
-        }
-        .buttonStyle(.plain)
-        .help(help)
-        // Narrow panes show only the dot, so the state must be spoken.
-        .accessibilityLabel("Account: \(text)")
-        .accessibilityHint(help)
-    }
-
-    private func chip(_ label: some View) -> some View {
-        HStack(spacing: 5) {
-            indicator
-            label
-        }
-        .font(.caption)
-        .lineLimit(1)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
-        .background(Capsule().fill(.quaternary.opacity(0.5)))
-        .contentShape(Capsule())
-        .fixedSize()
-    }
-
-    /// e.g. "Max" from "you@example.com · Max".
-    private var shortText: String? {
-        guard case .signedIn(let account) = state else { return nil }
-        if let plan = account.components(separatedBy: " · ").last, plan != account { return plan }
-        return account.split(separator: "@").first.map(String.init)
-    }
-
-    @ViewBuilder private var indicator: some View {
-        switch state {
-        case .checking, .loggingIn:
-            ProgressView()
-                .controlSize(.mini)
-                .frame(width: 9, height: 9)
-                .scaleEffect(0.7)
-        case .signedIn:
-            Circle().fill(.green).frame(width: 7, height: 7)
-        case .signedOut, .failed:
-            Circle().fill(.orange).frame(width: 7, height: 7)
-        case .unknown:
-            Circle().fill(.secondary.opacity(0.5)).frame(width: 7, height: 7)
-        }
-    }
-
-    private var text: String {
+/// What the account chip and dot say about a sign-in state.
+private enum AccountStatus {
+    static func text(_ state: AuthState) -> String {
         switch state {
         case .signedIn(let account): return account.isEmpty ? "Signed in" : account
         case .signedOut: return "Signed out"
@@ -295,7 +332,14 @@ private struct AccountChip: View {
         }
     }
 
-    private var help: String {
+    /// e.g. "Max" from "you@example.com · Max".
+    static func shortText(_ state: AuthState) -> String? {
+        guard case .signedIn(let account) = state else { return nil }
+        if let plan = account.components(separatedBy: " · ").last, plan != account { return plan }
+        return account.split(separator: "@").first.map(String.init)
+    }
+
+    static func help(_ state: AuthState) -> String {
         switch state {
         case .signedIn(let account): return "Signed in as \(account). Click for account settings."
         case .signedOut(let reason): return reason
@@ -307,41 +351,142 @@ private struct AccountChip: View {
     }
 }
 
+@MainActor
+private struct AccountIndicator: View {
+    let state: AuthState
+
+    var body: some View {
+        switch state {
+        case .checking, .loggingIn:
+            ProgressView()
+                .controlSize(.mini)
+                .frame(width: 10, height: 10)
+                .scaleEffect(0.75)
+        case .signedIn:
+            Circle().fill(.green).frame(width: 8, height: 8)
+        case .signedOut, .failed:
+            Circle().fill(.orange).frame(width: 8, height: 8)
+        case .unknown:
+            Circle().fill(.secondary.opacity(0.5)).frame(width: 8, height: 8)
+        }
+    }
+}
+
+/// Account status; opens Settings (Accounts) on click.
+@MainActor
+private struct AccountChip: View {
+    let state: AuthState
+
+    var body: some View {
+        SettingsLink {
+            // Narrow panes get progressively shorter labels instead of an unreadable "r…x".
+            ViewThatFits(in: .horizontal) {
+                chip(Text(AccountStatus.text(state)))
+                chip(Text(AccountStatus.text(state)).lineLimit(1).truncationMode(.middle)
+                    .frame(width: 130, alignment: .leading))
+                if let short = AccountStatus.shortText(state) { chip(Text(short)) }
+                chip(EmptyView())
+            }
+        }
+        .buttonStyle(.plain)
+        .help(AccountStatus.help(state))
+        // Narrow panes show only the dot, so the state must be spoken.
+        .accessibilityLabel("Account: \(AccountStatus.text(state))")
+        .accessibilityHint(AccountStatus.help(state))
+    }
+
+    private func chip(_ label: some View) -> some View {
+        HStack(spacing: 6) {
+            AccountIndicator(state: state)
+            label
+        }
+        .font(.callout)
+        .lineLimit(1)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(Capsule().fill(.quaternary.opacity(0.5)))
+        .contentShape(Capsule())
+        .fixedSize()
+    }
+}
+
+/// Compact panels: the account as a colored dot (the account and the usage in its tooltip), plus the
+/// highest usage percentage when there is a quota. Opens Settings (Accounts) on click.
+@MainActor
+private struct AccountDot: View {
+    let state: AuthState
+    let quota: QuotaSnapshot?
+
+    var body: some View {
+        SettingsLink {
+            HStack(spacing: 5) {
+                AccountIndicator(state: state)
+                if let quota {
+                    Text(QuotaChip.highest(quota))
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(QuotaChip.tint(quota))
+                }
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
+            .fixedSize()
+        }
+        .buttonStyle(.plain)
+        .help(tooltip)
+        .accessibilityLabel("Account: \(AccountStatus.text(state))")
+        .accessibilityHint(tooltip)
+    }
+
+    private var tooltip: String {
+        var lines = [AccountStatus.text(state)]
+        if let quota { lines.append(QuotaChip.tooltip(quota)) }
+        lines.append("Click for account settings.")
+        return lines.joined(separator: "\n")
+    }
+}
+
 /// Plan usage, e.g. "Weekly 1%" or "5h 7% · 7d 4%".
 @MainActor
 private struct QuotaChip: View {
     let quota: QuotaSnapshot
 
     var body: some View {
-        Text(summary)
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(tint)
+        Text(Self.summary(quota))
+            .font(.callout.monospacedDigit())
+            .foregroundStyle(Self.tint(quota))
             .lineLimit(1)
-            .padding(.horizontal, 7)
+            .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background(Capsule().fill(tint.opacity(0.12)))
+            .background(Capsule().fill(Self.tint(quota).opacity(0.12)))
             .fixedSize()
-            .help(tooltip)
+            .help(Self.tooltip(quota))
     }
 
-    private var summary: String {
+    static func summary(_ quota: QuotaSnapshot) -> String {
         if quota.windows.isEmpty { return "Limit reached" }
         if quota.windows.count == 1, let window = quota.windows.first {
-            return "\(window.label) \(Self.percent(window.usedPercent))"
+            return "\(window.label) \(percent(window.usedPercent))"
         }
-        return quota.windows.map { "\(Self.shortLabel($0.label)) \(Self.percent($0.usedPercent))" }
+        return quota.windows.map { "\(shortLabel($0.label)) \(percent($0.usedPercent))" }
             .joined(separator: " · ")
     }
 
-    private var tint: Color {
+    /// The most used window, e.g. "7%" ("Limit" when used up without windows).
+    static func highest(_ quota: QuotaSnapshot) -> String {
+        guard let used = quota.windows.map(\.usedPercent).max() else { return "Limit" }
+        return percent(used)
+    }
+
+    static func tint(_ quota: QuotaSnapshot) -> Color {
         if quota.includedUsageExhausted { return .red }
         if quota.windows.contains(where: { $0.usedPercent >= 80 }) { return .orange }
         return .secondary
     }
 
-    private var tooltip: String {
+    static func tooltip(_ quota: QuotaSnapshot) -> String {
         var lines = quota.windows.map { window -> String in
-            var line = "\(window.label): \(Self.percent(window.usedPercent)) used"
+            var line = "\(window.label): \(percent(window.usedPercent)) used"
             if let reset = window.resetsAt {
                 line += " · resets \(reset.formatted(date: .abbreviated, time: .shortened))"
             }

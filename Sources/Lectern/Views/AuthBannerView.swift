@@ -58,7 +58,7 @@ struct AuthBannerView: View {
         case .signedOut(let reason):
             BannerBox(tint: .orange, systemImage: "person.crop.circle.badge.exclamationmark") {
                 message(reason)
-                HStack(spacing: 8) {
+                ButtonRow {
                     loginButtons()
                     if model.provider == .claude {
                         // After a login in the user's own terminal (`claude auth login`).
@@ -94,7 +94,7 @@ struct AuthBannerView: View {
         case .checkFailed(let error):
             BannerBox(tint: .red, systemImage: "xmark.octagon.fill") {
                 message(error)
-                HStack(spacing: 8) {
+                ButtonRow {
                     Button("Check again") { model.recheckAuth() }
                         .buttonStyle(.borderedProminent)
                         .help("Reads the login status again; doesn't log in")
@@ -110,7 +110,7 @@ struct AuthBannerView: View {
                 case .unknown:
                     message("Couldn't check your ChatGPT usage. If your included usage is used up, sending now would spend purchased credits.")
                 }
-                HStack(spacing: 8) {
+                ButtonRow {
                     Button("Send anyway") { model.confirmSpendCredits() }
                     Button("Cancel") { model.cancelBlockedSend() }
                 }
@@ -149,11 +149,9 @@ struct AuthBannerView: View {
             loginButton("Log in in Terminal", method: .terminal, prominent: prominent)
                 .help("Opens Terminal running Claude Code's own `claude auth login`")
         case .codex:
-            HStack(spacing: 8) {
-                loginButton("Sign in with ChatGPT", method: .browser, prominent: prominent)
-                Button("Use a device code") { model.startLogin(.deviceCode) }
-                    .help("Shows a code to enter on the ChatGPT sign-in page")
-            }
+            loginButton("Sign in with ChatGPT", method: .browser, prominent: prominent)
+            Button("Use a device code") { model.startLogin(.deviceCode) }
+                .help("Shows a code to enter on the ChatGPT sign-in page")
         }
     }
 
@@ -171,6 +169,19 @@ struct AuthBannerView: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(code, forType: .string)
         copiedCode = code
+    }
+}
+
+/// The banner's buttons side by side, or one under another when a narrow panel can't fit them.
+@MainActor
+private struct ButtonRow<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) { content }
+            VStack(alignment: .leading, spacing: 6) { content }
+        }
     }
 }
 

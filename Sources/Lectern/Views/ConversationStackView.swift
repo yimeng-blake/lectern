@@ -2,25 +2,39 @@ import AppKit
 import LecternCore
 import SwiftUI
 
-/// The chat pane: the window's conversations stacked top to bottom in an AppKit split view with
-/// draggable dividers, and "New Conversation" below them. A collapsed conversation keeps only its title
-/// bar; its views stay alive, so the transcript's web view isn't reloaded. Expanded panels share the
-/// height in proportion to their last sizes, which divider drags and window resizing update.
+/// The chat pane: the window's conversations in a grid (`ConversationStack.gridRows`) of nested AppKit
+/// split views, with draggable dividers, and "New Conversation" below. The rows are stacked top to
+/// bottom; each row is split into its one or two panels. Panels move between rows, and into a holder
+/// (hidden) while one conversation is shown alone, without being rebuilt or leaving the window, so their
+/// transcripts keep their pages. Row heights and each two-column row's split are kept as proportions,
+/// which divider drags update; a row that gains a second column lines it up with the other row. Only a
+/// panel alone in its row folds to its title bar.
 @MainActor
 final class ConversationColumnController: NSViewController, NSSplitViewDelegate {
-    static let titleBarHeight: CGFloat = 30
-    /// Dividers stop here, unless the pane is too short for every expanded panel to get it.
+    static let titleBarHeight: CGFloat = 32
+    /// Dividers stop here, unless the pane is too small for every panel to get it.
     static let panelMinimumHeight: CGFloat = 200
+    static let panelMinimumWidth: CGFloat = 300
     static let newConversationBarHeight: CGFloat = 30
 
     private let stack: ConversationStack
-    private let splitView = NSSplitView()
-    private var panels: [UUID: NSView] = [:]
-    /// The split view's panels, top to bottom, as last synced from the stack.
-    private var order: [UUID] = []
-    private var collapsed: Set<UUID> = []
-    /// Height shares of the expanded panels (their last heights, in points).
-    private var weights: [UUID: CGFloat] = [:]
+    /// The rows, top to bottom.
+    private let rowsView = NSSplitView()
+    /// Row split views by index, reused as the grid changes.
+    private var rowViews: [NSSplitView] = []
+    /// Holds the panels that aren't shown, hidden themselves (a hidden holder would leave a transcript
+    /// blank after it moved out: WebKit only notices visibility changes from the panel's own hiding).
+    private let holder = NSView()
+    private var panels: [UUID: PanelContainer] = [:]
+    /// The grid as last synced: conversation ids by row.
+    private var rows: [[UUID]] = []
+    private var foldedRows: [Bool] = []
+    /// One conversation is shown alone; the grid's proportions wait for its return.
+    private var showsOneAlone = false
+    /// The grid's row height shares (their last heights, in points) and the first column's share of
+    /// each two-column row's width.
+    private var rowWeights: [CGFloat] = []
+    private var columnShares: [CGFloat?] = []
     private var mouseMonitor: Any?
 
     init(stack: ConversationStack) {
@@ -33,21 +47,23 @@ final class ConversationColumnController: NSViewController, NSSplitViewDelegate 
 
     override func loadView() {
         let root = NSView()
-        splitView.isVertical = false
-        splitView.dividerStyle = .thin
-        splitView.delegate = self
-        splitView.translatesAutoresizingMaskIntoConstraints = false
+        holder.clipsToBounds = true
+        rowsView.isVertical = false
+        rowsView.dividerStyle = .thin
+        rowsView.delegate = self
+        rowsView.translatesAutoresizingMaskIntoConstraints = false
         let bar = NSHostingView(rootView: NewConversationBar(stack: stack))
         bar.sizingOptions = []
         bar.sceneBridgingOptions = []
         bar.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(splitView)
+        root.addSubview(holder)
+        root.addSubview(rowsView)
         root.addSubview(bar)
         NSLayoutConstraint.activate([
-            splitView.topAnchor.constraint(equalTo: root.topAnchor),
-            splitView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            splitView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            splitView.bottomAnchor.constraint(equalTo: bar.topAnchor),
+            rowsView.topAnchor.constraint(equalTo: root.topAnchor),
+            rowsView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            rowsView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            rowsView.bottomAnchor.constraint(equalTo: bar.topAnchor),
             bar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             bar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             bar.bottomAnchor.constraint(equalTo: root.bottomAnchor),
@@ -76,19 +92,22 @@ final class ConversationColumnController: NSViewController, NSSplitViewDelegate 
 
     private func focusPanel(under event: NSEvent) {
         guard let window = view.window, event.window === window else { return }
-        let point = splitView.convert(event.locationInWindow, from: nil)
-        guard splitView.bounds.contains(point) else { return }
-        for (id, panel) in zip(order, splitView.subviews) where panel.frame.contains(point) {
-            stack.focus(id)
-            return
+        for (id, panel) in panels where panel.superview?.superview === rowsView {
+            if panel.bounds.contains(panel.convert(event.locationInWindow, from: nil)) {
+                stack.focus(id)
+                return
+            }
         }
     }
 
     // MARK: Panels
 
-    /// Follows the stack: conversations added, closed or moved, and panels collapsed or expanded.
+    /// Follows the stack: conversations added, closed or moved, one shown alone, the focus, and panels
+    /// folded or opened.
     private func observeStack() {
         withObservationTracking {
+            _ = stack.maximizedID
+            _ = stack.focusedID
             for model in stack.conversations { _ = model.isCollapsed }
         } onChange: { [weak self] in
             DispatchQueue.main.async {
@@ -104,53 +123,120 @@ final class ConversationColumnController: NSViewController, NSSplitViewDelegate 
         let ids = models.map(\.id)
         for id in Array(panels.keys) where !ids.contains(id) {
             panels.removeValue(forKey: id)?.removeFromSuperview()
-            weights[id] = nil
         }
-        let share = typicalWeight()
         for model in models where panels[model.id] == nil {
-            let host = NSHostingView(rootView: ConversationPanel(model: model, stack: stack))
-            // The split view sizes the panels; SwiftUI bridges nothing into the window.
-            host.sizingOptions = []
-            host.sceneBridgingOptions = []
-            host.clipsToBounds = true
-            panels[model.id] = host
-            weights[model.id] = share
+            panels[model.id] = PanelContainer(model: model, stack: stack)
         }
-        order = ids
-        collapsed = Set(models.filter(\.isCollapsed).map(\.id))
-        let views = ids.compactMap { panels[$0] }
-        // Reorders without removing views that stay, so their web views keep their pages.
-        if splitView.subviews != views { splitView.subviews = views }
-        layoutPanels()
+        let alone = stack.maximizedID.flatMap { id in ids.contains(id) ? id : nil }
+        let grid = alone.map { [[$0]] } ?? ConversationStack.gridRows(count: ids.count).map { $0.map { ids[$0] } }
+        showsOneAlone = alone != nil
+        if !showsOneAlone { keepProportions(for: grid) }
+        place(grid)
+        rows = grid
+        foldedRows = grid.map { row in
+            row.count == 1 && !showsOneAlone && models.first { $0.id == row[0] }?.isCollapsed == true
+        }
+        for model in models {
+            panels[model.id]?.showsFocus = ids.count > 1 && !showsOneAlone && stack.focusedID == model.id
+        }
+        layoutRows()
     }
 
-    /// A new panel's share: the expanded panels' average, so it gets about an equal part.
-    private func typicalWeight() -> CGFloat {
-        let expanded = order.filter { !collapsed.contains($0) }.compactMap { weights[$0] }
-        guard !expanded.isEmpty else { return Self.panelMinimumHeight }
-        return expanded.reduce(0, +) / CGFloat(expanded.count)
+    /// Rows that stay keep their height share and a new row gets the average; a row that gains a second
+    /// column lines it up with the other row (else splits in half).
+    private func keepProportions(for grid: [[UUID]]) {
+        let typical = rowWeights.isEmpty ? Self.panelMinimumHeight : rowWeights.reduce(0, +) / CGFloat(rowWeights.count)
+        rowWeights = grid.indices.map { $0 < rowWeights.count ? rowWeights[$0] : typical }
+        let old = columnShares
+        columnShares = grid.indices.map { i in
+            guard grid[i].count == 2 else { return nil }
+            if i < old.count, let share = old[i] { return share }
+            return old.compactMap { $0 }.first ?? 0.5
+        }
     }
 
-    private func layoutPanels() {
-        let views = splitView.subviews
-        guard !views.isEmpty, views.count == order.count else { return }
-        let size = splitView.bounds.size
-        let divider = splitView.dividerThickness
-        let heights = Self.panelHeights(collapsed: order.map { collapsed.contains($0) },
-                                        weights: order.map { weights[$0] ?? 1 },
-                                        available: size.height - divider * CGFloat(views.count - 1),
-                                        titleBar: Self.titleBarHeight)
-        var y: CGFloat = 0  // NSSplitView is flipped: the first panel is at the top
-        for (view, height) in zip(views, heights) {
-            view.frame = NSRect(x: 0, y: y, width: size.width, height: height)
+    /// Puts each panel at its row and column. A panel that moves waits in the holder first, so none
+    /// leaves the window (a web view would lose its rendering, a field its keyboard focus); the ones not
+    /// shown stay there, hidden.
+    private func place(_ grid: [[UUID]]) {
+        let window = view.window
+        let responder = window?.firstResponder
+        while rowViews.count < grid.count {
+            let row = NSSplitView()
+            row.isVertical = true
+            row.dividerStyle = .thin
+            row.delegate = self
+            rowViews.append(row)
+        }
+        let shownRows = Array(rowViews.prefix(grid.count))
+        for (id, panel) in panels {
+            let target = grid.firstIndex { $0.contains(id) }.map { r in (row: shownRows[r], column: grid[r].firstIndex(of: id)!) }
+            let inPlace = target.map { panel.superview === $0.row && $0.row.superview === rowsView
+                && $0.row.subviews.firstIndex(of: panel) == $0.column } ?? false
+            if !inPlace, panel.superview !== holder { holder.addSubview(panel) }
+        }
+        if rowsView.subviews != shownRows { rowsView.subviews = shownRows }
+        for (row, ids) in zip(shownRows, grid) {
+            let views = ids.compactMap { panels[$0] }
+            if row.subviews != views { row.subviews = views }
+        }
+        for (id, panel) in panels {
+            let shown = grid.contains { $0.contains(id) }
+            if panel.isHidden == shown { panel.isHidden = !shown }
+        }
+        // A field or transcript that had the keyboard focus keeps it after its panel moved.
+        if let window, let responder = responder as? NSView, window.firstResponder !== responder,
+           responder.window === window, !responder.isHiddenOrHasHiddenAncestor {
+            window.makeFirstResponder(responder)
+        }
+    }
+
+    private func rowHeights() -> [CGFloat] {
+        let count = rowsView.subviews.count
+        return Self.panelHeights(collapsed: foldedRows, weights: showsOneAlone ? [1] : rowWeights,
+                                 available: rowsView.bounds.height - rowsView.dividerThickness * CGFloat(max(count - 1, 0)),
+                                 titleBar: Self.titleBarHeight)
+    }
+
+    private func columnWidths(_ index: Int) -> [CGFloat] {
+        let row = rowViews[index]
+        let count = row.subviews.count
+        let share = showsOneAlone ? nil : columnShares[safe: index].flatMap { $0 }
+        return Self.columnWidths(count: count, share: share ?? 0.5,
+                                 available: row.bounds.width - row.dividerThickness * CGFloat(max(count - 1, 0)))
+    }
+
+    private func layoutRows() {
+        let views = rowsView.subviews
+        guard !views.isEmpty, views.count == rows.count else { return }
+        let width = rowsView.bounds.width
+        let divider = rowsView.dividerThickness
+        var y: CGFloat = 0  // NSSplitView is flipped: the first row is at the top
+        for (view, height) in zip(views, rowHeights()) {
+            view.frame = NSRect(x: 0, y: y, width: width, height: height)
             y += height + divider
         }
-        splitView.needsDisplay = true
+        rowsView.needsDisplay = true
+        for index in views.indices { layoutColumns(index) }
     }
 
-    /// Heights for the panels top to bottom: collapsed ones get the title bar, expanded ones share the
-    /// rest in proportion to `weights` (whole points, the remainder to the last). When every panel is
-    /// collapsed, the last one takes the leftover space (blank under its title bar).
+    private func layoutColumns(_ index: Int) {
+        guard index < rows.count, index < rowViews.count else { return }
+        let row = rowViews[index]
+        let views = row.subviews
+        guard !views.isEmpty else { return }
+        let height = row.bounds.height
+        var x: CGFloat = 0
+        for (view, width) in zip(views, columnWidths(index)) {
+            view.frame = NSRect(x: x, y: 0, width: width, height: height)
+            x += width + row.dividerThickness
+        }
+        row.needsDisplay = true
+    }
+
+    /// Heights for the rows top to bottom: folded ones get the title bar, the others share the rest in
+    /// proportion to `weights` (whole points, the remainder to the last). When every row is folded,
+    /// the last one takes the leftover space (blank under its title bar).
     static func panelHeights(collapsed: [Bool], weights: [CGFloat], available: CGFloat, titleBar: CGFloat) -> [CGFloat] {
         guard !collapsed.isEmpty else { return [] }
         var heights = collapsed.map { $0 ? titleBar : 0 }
@@ -160,47 +246,67 @@ final class ConversationColumnController: NSViewController, NSSplitViewDelegate 
             heights[heights.count - 1] += rest
             return heights
         }
-        let total = expanded.reduce(CGFloat(0)) { $0 + max(weights[$1], 1) }
+        let weight = { (i: Int) in max(weights[safe: i] ?? 1, 1) }
+        let total = expanded.reduce(CGFloat(0)) { $0 + weight($1) }
         var used: CGFloat = 0
         for i in expanded where i != last {
-            heights[i] = (rest * max(weights[i], 1) / total).rounded(.down)
+            heights[i] = (rest * weight(i) / total).rounded()
             used += heights[i]
         }
         heights[last] = max(0, rest - used)
         return heights
     }
 
-    /// Where divider `index` may be dragged: never past a panel's minimum, and not at all next to a
-    /// collapsed panel. Nil for an index the split view doesn't have.
-    static func dividerRange(index: Int, frames: [NSRect], collapsed: [Bool], minimum: CGFloat) -> ClosedRange<CGFloat>? {
-        guard index >= 0, index + 1 < frames.count, index + 1 < collapsed.count else { return nil }
-        let above = frames[index], below = frames[index + 1]
-        let fixed = above.maxY...above.maxY
-        if collapsed[index] || collapsed[index + 1] { return fixed }
-        let low = above.minY + minimum
-        let high = below.maxY - minimum
-        return low <= high ? low...high : fixed
+    /// Widths for a row's one or two panels: the first gets `share` of the room (whole points).
+    static func columnWidths(count: Int, share: CGFloat, available: CGFloat) -> [CGFloat] {
+        let room = max(0, available)
+        guard count == 2 else { return count == 1 ? [room] : [] }
+        let first = (room * min(max(share, 0), 1)).rounded()
+        return [first, room - first]
     }
 
-    /// The expanded panels' minimum: `panelMinimumHeight`, or an equal share when the pane is shorter.
-    private var minimumExpandedHeight: CGFloat {
-        let count = splitView.subviews.count
-        let expanded = order.filter { !collapsed.contains($0) }.count
-        guard expanded > 0 else { return Self.panelMinimumHeight }
-        let room = splitView.bounds.height - splitView.dividerThickness * CGFloat(max(count - 1, 0))
-            - Self.titleBarHeight * CGFloat(count - expanded)
-        return min(Self.panelMinimumHeight, max(Self.titleBarHeight, (room / CGFloat(expanded)).rounded(.down)))
+    /// Where divider `index` may be dragged, along the split's axis (`spans` are the panes' extents):
+    /// never past a pane's minimum, and not at all next to a folded one. Nil for an index the split
+    /// view doesn't have.
+    static func dividerRange(index: Int, spans: [ClosedRange<CGFloat>], fixed: [Bool], minimum: CGFloat) -> ClosedRange<CGFloat>? {
+        guard index >= 0, index + 1 < spans.count else { return nil }
+        let before = spans[index], after = spans[index + 1]
+        let stay = before.upperBound...before.upperBound
+        if fixed[safe: index] == true || fixed[safe: index + 1] == true { return stay }
+        let low = before.lowerBound + minimum
+        let high = after.upperBound - minimum
+        return low <= high ? low...high : stay
     }
 
-    private func dividerRange(_ index: Int) -> ClosedRange<CGFloat>? {
-        Self.dividerRange(index: index, frames: splitView.subviews.map(\.frame),
-                          collapsed: order.map { collapsed.contains($0) }, minimum: minimumExpandedHeight)
+    /// The panels' minimum along a split: `preferred`, or an equal share when the pane is smaller.
+    private static func minimum(_ preferred: CGFloat, room: CGFloat, panes: Int) -> CGFloat {
+        guard panes > 0 else { return preferred }
+        return min(preferred, max(titleBarHeight, (room / CGFloat(panes)).rounded(.down)))
     }
 
-    // MARK: NSSplitViewDelegate
+    private func dividerRange(_ splitView: NSSplitView, _ index: Int) -> ClosedRange<CGFloat>? {
+        let frames = splitView.subviews.map(\.frame)
+        let count = frames.count
+        if splitView === rowsView {
+            let open = foldedRows.filter { !$0 }.count
+            let room = splitView.bounds.height - splitView.dividerThickness * CGFloat(max(count - 1, 0))
+                - Self.titleBarHeight * CGFloat(count - open)
+            return Self.dividerRange(index: index, spans: frames.map { $0.minY...$0.maxY }, fixed: foldedRows,
+                                     minimum: Self.minimum(Self.panelMinimumHeight, room: room, panes: open))
+        }
+        let room = splitView.bounds.width - splitView.dividerThickness * CGFloat(max(count - 1, 0))
+        return Self.dividerRange(index: index, spans: frames.map { $0.minX...$0.maxX }, fixed: [],
+                                 minimum: Self.minimum(Self.panelMinimumWidth, room: room, panes: count))
+    }
+
+    // MARK: NSSplitViewDelegate (the rows and each row)
 
     func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
-        layoutPanels()
+        if splitView === rowsView {
+            layoutRows()
+        } else if let index = rowViews.firstIndex(where: { $0 === splitView }) {
+            layoutColumns(index)
+        }
     }
 
     func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool {
@@ -209,33 +315,100 @@ final class ConversationColumnController: NSViewController, NSSplitViewDelegate 
 
     func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat,
                    ofSubviewAt dividerIndex: Int) -> CGFloat {
-        dividerRange(dividerIndex)?.lowerBound ?? proposedMinimumPosition
+        dividerRange(splitView, dividerIndex)?.lowerBound ?? proposedMinimumPosition
     }
 
     func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat,
                    ofSubviewAt dividerIndex: Int) -> CGFloat {
-        dividerRange(dividerIndex)?.upperBound ?? proposedMaximumPosition
+        dividerRange(splitView, dividerIndex)?.upperBound ?? proposedMaximumPosition
     }
 
     /// No resize cursor on a divider that can't move.
     func splitView(_ splitView: NSSplitView, effectiveRect proposedEffectiveRect: NSRect, forDrawnRect drawnRect: NSRect,
                    ofDividerAt dividerIndex: Int) -> NSRect {
-        guard let range = dividerRange(dividerIndex), range.lowerBound < range.upperBound else { return .zero }
+        guard let range = dividerRange(splitView, dividerIndex), range.lowerBound < range.upperBound else { return .zero }
         return proposedEffectiveRect
     }
 
-    /// A divider drag or a window resize: the expanded panels' new heights are their shares from now on.
+    /// A divider drag: the new sizes are the grid's proportions from now on. Sizes the layout itself
+    /// gave (window resizing, the grid changing) are left alone, so rounding never drifts them.
     func splitViewDidResizeSubviews(_ notification: Notification) {
-        for (id, view) in zip(order, splitView.subviews) where !collapsed.contains(id) && view.frame.height > 0 {
-            weights[id] = view.frame.height
+        guard !showsOneAlone, let splitView = notification.object as? NSSplitView else { return }
+        let moved = { (actual: [CGFloat], laidOut: [CGFloat]) in
+            actual.count == laidOut.count && zip(actual, laidOut).contains { abs($0 - $1) >= 1 }
+        }
+        if splitView === rowsView {
+            let heights = splitView.subviews.map(\.frame.height)
+            guard moved(heights, rowHeights()) else { return }
+            for (i, height) in heights.enumerated() where i < rowWeights.count && foldedRows[safe: i] == false && height > 0 {
+                rowWeights[i] = height
+            }
+        } else if let i = rowViews.firstIndex(where: { $0 === splitView }), columnShares.indices.contains(i),
+                  columnShares[i] != nil, splitView.subviews.count == 2 {
+            let widths = splitView.subviews.map(\.frame.width)
+            let room = widths.reduce(0, +)
+            guard moved(widths, columnWidths(i)), room > 0 else { return }
+            columnShares[i] = widths[0] / room
         }
     }
+}
+
+/// One panel in the grid: the conversation's SwiftUI view, and over it the focused conversation's
+/// ring in its color (AppKit, so it draws above the transcript's web view).
+@MainActor
+private final class PanelContainer: NSView {
+    private let ring = PanelFocusRing()
+
+    var showsFocus = false {
+        didSet { ring.isHidden = !showsFocus }
+    }
+
+    init(model: ChatModel, stack: ConversationStack) {
+        super.init(frame: .zero)
+        let host = NSHostingView(rootView: ConversationPanel(model: model, stack: stack))
+        // The split view sizes the panels; SwiftUI bridges nothing into the window.
+        host.sizingOptions = []
+        host.sceneBridgingOptions = []
+        host.autoresizingMask = [.width, .height]
+        ring.autoresizingMask = [.width, .height]
+        ring.color = model.colorTag.nsColor
+        ring.isHidden = true
+        addSubview(host)
+        addSubview(ring)
+        clipsToBounds = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+}
+
+@MainActor
+private final class PanelFocusRing: NSView {
+    var color = NSColor.controlAccentColor
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        color.setStroke()
+        let path = NSBezierPath(rect: bounds.insetBy(dx: 1, dy: 1))
+        path.lineWidth = 2
+        path.stroke()
+    }
+}
+
+extension ConversationTag {
+    var nsColor: NSColor {
+        NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
+                blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
+    }
+
+    var color: Color { Color(nsColor: nsColor) }
 }
 
 // MARK: - Panel
 
 /// One conversation: its title bar, then the chat (header, banner, transcript, input), which a
-/// collapsed panel keeps alive but hidden.
+/// folded panel keeps alive but hidden.
 @MainActor
 struct ConversationPanel: View {
     let model: ChatModel
@@ -255,8 +428,10 @@ struct ConversationPanel: View {
     }
 }
 
-/// Collapse chevron, title (double-click to rename), status, and the conversation menu. The focused
-/// conversation's bar is tinted when there are several.
+/// Fold chevron (only for a panel alone in its row), the conversation's color dot, title (double-click
+/// to rename), status, show-alone button and the conversation menu. A 3 pt line in the conversation's
+/// color tops the bar; the focused conversation's bar is tinted more strongly and the others' titles
+/// are secondary.
 @MainActor
 private struct ConversationTitleBar: View {
     let model: ChatModel
@@ -266,64 +441,100 @@ private struct ConversationTitleBar: View {
     @State private var draftTitle = ""
     @FocusState private var fieldFocused: Bool
 
-    private var showsFocus: Bool { stack.conversations.count > 1 && stack.focusedID == model.id }
+    /// Nothing else is on screen: one conversation, or this one shown alone.
+    private var isAlone: Bool { stack.conversations.count < 2 || stack.maximizedID != nil }
+    private var showsFocus: Bool { !isAlone && stack.focusedID == model.id }
+    private var canFold: Bool { stack.maximizedID == nil && stack.canCollapse(model.id) }
 
     var body: some View {
-        HStack(spacing: 6) {
-            Button {
-                model.isCollapsed.toggle()
-            } label: {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .rotationEffect(.degrees(model.isCollapsed ? 0 : 90))
-                    .frame(width: 16, height: 16)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
-            .help(model.isCollapsed ? "Expand" : "Collapse")
-            .accessibilityLabel(model.isCollapsed ? "Expand conversation" : "Collapse conversation")
+        VStack(spacing: 0) {
+            model.colorTag.color
+                .frame(height: 3)
+            HStack(spacing: 6) {
+                if canFold { foldButton }
+                Circle()
+                    .fill(model.colorTag.color)
+                    .frame(width: 8, height: 8)
+                    .accessibilityHidden(true)
 
-            if editing {
-                titleField
-            } else {
-                Text(model.title)
-                    .fontWeight(.semibold)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .onTapGesture(count: 2, perform: beginRename)
-                    .help(model.titleIsCustom ? "\(model.title) — double-click to rename"
-                                              : "\(model.title) — named automatically; double-click to rename")
-                    .accessibilityLabel("Conversation: \(model.title)")
-                    .accessibilityAddTraits(.isHeader)
-            }
+                if editing {
+                    titleField
+                } else {
+                    Text(model.title)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(isAlone || showsFocus ? .primary : .secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .onTapGesture(count: 2, perform: beginRename)
+                        .help(model.titleIsCustom ? "\(model.title) — double-click to rename"
+                                                  : "\(model.title) — named automatically; double-click to rename")
+                        .accessibilityLabel("Conversation: \(model.title)")
+                        .accessibilityAddTraits(.isHeader)
+                }
 
-            if model.isAnyBusy {
-                ProgressView()
-                    .controlSize(.small)
-                    .scaleEffect(0.6)
-                    .frame(width: 14, height: 14)
-                    .help("Answering…")
+                if model.isAnyBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.7)
+                        .frame(width: 16, height: 16)
+                        .help("Answering…")
+                }
+                if model.isCollapsed {
+                    Text(model.provider.displayName)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+                if stack.conversations.count > 1 { maximizeButton }
+                conversationMenu
             }
-            if model.isCollapsed {
-                Text(model.provider.displayName)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .fixedSize()
-            }
-            conversationMenu
+            .font(.body)
+            .padding(.leading, canFold ? 6 : 10)
+            .padding(.trailing, 8)
+            .frame(maxHeight: .infinity)
         }
-        .font(.callout)
-        .padding(.leading, 6)
-        .padding(.trailing, 8)
         .frame(height: ConversationColumnController.titleBarHeight)
-        .background(showsFocus ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.035))
+        .background(model.colorTag.color.opacity(showsFocus ? 0.16 : 0.06))
         .overlay(alignment: .bottom) {
             if !model.isCollapsed { Divider() }
         }
+    }
+
+    private var foldButton: some View {
+        Button {
+            model.isCollapsed.toggle()
+        } label: {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 11, weight: .semibold))
+                .rotationEffect(.degrees(model.isCollapsed ? 0 : 90))
+                .frame(width: 16, height: 16)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+        .help(model.isCollapsed ? "Expand" : "Collapse")
+        .accessibilityLabel(model.isCollapsed ? "Expand conversation" : "Collapse conversation")
+    }
+
+    /// ⤢ shows this conversation alone in the chat pane; ⤡ (or Esc in its empty message field) shows all.
+    private var maximizeButton: some View {
+        Button {
+            model.toggleMaximize()
+        } label: {
+            Image(systemName: model.isMaximized ? "arrow.down.right.and.arrow.up.left"
+                                                : "arrow.up.left.and.arrow.down.right")
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: 18, height: 18)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+        .help(model.isMaximized ? "Show all conversations (or Esc in the empty message field)"
+                                : "Show this conversation alone")
+        .accessibilityLabel(model.isMaximized ? "Show all conversations" : "Show this conversation alone")
     }
 
     private var titleField: some View {
@@ -349,9 +560,9 @@ private struct ConversationTitleBar: View {
             Button("New Chat") { ConversationActions.clear(model) }
                 .disabled(model.messages.isEmpty || model.isAnyBusy)
             Divider()
-            Button("Move Up") { stack.moveConversation(model.id, by: -1) }
+            Button("Move Earlier") { stack.moveConversation(model.id, by: -1) }
                 .disabled(!stack.canMoveConversation(model.id, by: -1))
-            Button("Move Down") { stack.moveConversation(model.id, by: 1) }
+            Button("Move Later") { stack.moveConversation(model.id, by: 1) }
                 .disabled(!stack.canMoveConversation(model.id, by: 1))
             Divider()
             Button("Close Conversation") { ConversationActions.close(model, in: stack) }
@@ -381,7 +592,7 @@ private struct ConversationTitleBar: View {
     }
 }
 
-/// "+ New Conversation" under the stack.
+/// "+ New Conversation" under the conversations.
 @MainActor
 private struct NewConversationBar: View {
     let stack: ConversationStack
@@ -398,11 +609,10 @@ private struct NewConversationBar: View {
                 .buttonStyle(.borderless)
                 .disabled(!stack.canAddConversation)
                 .help(stack.canAddConversation
-                      ? "Another conversation about this document, below the others (\u{2325}\u{2318}N)"
+                      ? "Another conversation about this document, after the others (\u{2325}\u{2318}N)"
                       : "A document can have up to \(ConversationStack.maxConversations) conversations")
                 Spacer(minLength: 0)
             }
-            .controlSize(.small)
             .padding(.horizontal, 10)
             .frame(maxHeight: .infinity)
         }

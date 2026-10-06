@@ -489,6 +489,8 @@ Lectern can use a light appearance or a dark appearance. Lectern can also show t
 **Dark Pages** does not change the page images that Lectern sends to Claude or ChatGPT. Lectern keeps these settings
 when you quit Lectern. You can also change them in Settings > Advanced > **Appearance**.
 
+To change the text size of the messages, refer to [Use more than one conversation](#use-more-than-one-conversation).
+
 ### What Lectern keeps for each PDF
 
 For each PDF, Lectern keeps these settings and uses them again when you open the PDF:
@@ -498,7 +500,7 @@ For each PDF, Lectern keeps these settings and uses them again when you open the
 - the page layout
 - the sidebar: shown or not shown, and Thumbnails, Table of Contents or Highlights
 - the chat pane: shown or not shown
-- the conversations: their order, titles and collapsed conversations
+- the conversations: their order, titles, colors and collapsed conversations
 - the highlights and notes
 
 Lectern keeps these settings in the Lectern folder (refer to [Privacy and usage](#privacy-and-usage)), never in the
@@ -507,7 +509,7 @@ PDF with a different name or folder gets the same settings and conversations. Le
 
 ## Use the chat pane
 
-The chat pane can have 1 to 4 conversations about the PDF, one above the other. Refer to
+The chat pane can have 1 to 4 conversations about the PDF, in 1 or 2 columns. Refer to
 [Use more than one conversation](#use-more-than-one-conversation). In each conversation, you can select a different
 provider at any time. Lectern keeps the messages of both providers. When you open the PDF again, Lectern shows the
 conversations again.
@@ -523,8 +525,8 @@ The chat pane has these controls:
 
 | Control | Location | Result |
 | --- | --- | --- |
-| Title bar | Top of each conversation | Shows the title, the arrow that collapses the conversation, and the **Conversation** menu (⋯ button). |
-| **New Conversation** | Bottom of the chat pane | Adds a conversation below the others. |
+| Title bar | Top of each conversation | Shows the color dot, the title, the arrow that collapses the conversation, the **Show this conversation alone** button (⤢) and the **Conversation** menu (⋯ button). |
+| **New Conversation** | Bottom of the chat pane | Adds a conversation after the others. |
 | Provider picker (Claude or ChatGPT) | Chat header | Selects the provider. Each provider has a separate conversation about the PDF. |
 | Model picker | Chat header | Selects the model. |
 | Reasoning effort picker | Chat header | Selects the reasoning effort. |
@@ -535,6 +537,7 @@ The chat pane has these controls:
 | **Attach page image** (photo button) | Below the message field | Sends an image of the current page. Refer to [Context](#context). |
 | **Whole document** (magnifier button) | Below the message field | Sends all pages, or the most applicable pages. Refer to [Context](#context). |
 | Context text | Below the message field | Shows what Lectern sends with the question, for example "Context: around p. 12 · selection". |
+| **+** button (narrow conversations) | Left of the message field | Has **Attach Page Image**, **Whole Document**, **Presets** and the context text. Refer to [Use more than one conversation](#use-more-than-one-conversation). |
 
 For Claude, Lectern sends the model and the reasoning effort with a message only if they are not **Default**. With
 **Default**, Claude Code uses the settings in its configuration. For ChatGPT, Lectern always sends the model, the
@@ -545,26 +548,82 @@ Settings > Models sets the default values. A change in the chat header also beco
 
 ### Use more than one conversation
 
-You can have up to 4 conversations about a PDF, for example one for each topic. Lectern shows them one above the
-other in the chat pane. Each conversation has a title bar, a provider, a model and messages. The providers do not see
-the messages of the other conversations.
+You can have up to 4 conversations about a PDF, for example one for each topic. Each conversation has a title bar, a
+color, a provider, a model and messages. The providers do not see the messages of the other conversations.
+
+The quantity of conversations sets their positions in the chat pane:
+
+- 1 conversation fills the chat pane.
+- 2 conversations are one above the other.
+- With 3 conversations, the first 2 are side by side, above the third.
+- 4 conversations are in 2 rows of 2.
+
+The first conversation is at the top left. The others follow from left to right, then from top to bottom.
+
+With 3 or 4 conversations, the chat pane becomes wider and the PDF becomes narrower. The window keeps its size. With 1
+or 2 conversations again, the chat pane gets its earlier width back. If you changed the width of the chat pane, it
+keeps your width.
+
+To change the size of the conversations, drag the lines between them. When you open the PDF again, the conversations
+have equal sizes.
 
 **Add a conversation**
 
 1. Click **New Conversation** at the bottom of the chat pane.
    - You can also select **File > New Conversation** (⌥⌘N).
 
-Lectern adds the conversation below the others and puts the cursor in its message field. **New Conversation** is gray
+Lectern adds the conversation after the others and puts the cursor in its message field. **New Conversation** is gray
 when the PDF has 4 conversations.
+
+**Colors**
+
+Each conversation has a color: blue, green, orange or purple. The dot before the title, the line above the title bar
+and the title bar have this color. A new conversation gets a color that the other conversations do not have. Lectern
+keeps the color of each conversation.
 
 **Focus a conversation**
 
 **Ask Lectern**, ⌘. and **File > Close Conversation** use the focused conversation.
 
 1. Click in the conversation.
+   - You can also press ⌃⌘1, ⌃⌘2, ⌃⌘3 or ⌃⌘4 for conversation 1, 2, 3 or 4 (**File > Go to Conversation**).
 
-When you type in a message field, that conversation also becomes the focused conversation. If the PDF has 2 or more
-conversations, the title bar of the focused conversation has the accent color.
+⌃⌘1 to ⌃⌘4 also put the cursor in the message field of the conversation. When you type in a message field, that
+conversation also becomes the focused conversation. If the chat pane shows 2 or more conversations, the focused
+conversation has a line around it in its color. The titles of the other conversations are gray.
+
+**Show one conversation alone**
+
+1. In the title bar, click the **Show this conversation alone** button (⤢).
+
+The conversation fills the chat pane and becomes the focused conversation. The other conversations do not change.
+
+To show all conversations again, do one of these steps:
+
+- Click the **Show all conversations** button (⤡) in the title bar.
+- Press Esc in the message field. The message field must be empty.
+
+Lectern also shows all conversations again when you add a conversation or go to a different conversation.
+
+**Narrow conversations**
+
+A conversation that is 420 points wide or less has fewer controls, for example in 2 rows of 2. Its text does not
+become smaller.
+
+- The chat header has one menu for the provider, the model and the reasoning effort, for example "Claude · Opus ·
+  Medium".
+- The account is a colored dot, with the usage in percent if the provider reports it. To see the account and the
+  usage, put the pointer on the dot.
+- The **+** button at the left of the message field has **Attach Page Image**, **Whole Document**, **Presets** and the
+  context text.
+
+**Change the text size of the messages**
+
+1. Select **View > Chat Text Size**.
+2. Select **Small**, **Medium**, **Large** or **Extra Large**.
+
+Lectern uses this text size for the messages and the message fields in all windows. **Medium** is the usual size. You
+can also change it in Settings > Advanced > **Appearance**.
 
 **Rename a conversation**
 
@@ -577,15 +636,20 @@ To cancel, press Esc. To use the automatic title again, delete all of the text. 
 
 **Collapse or expand a conversation**
 
+You can collapse a conversation only if it is alone in its row, with other conversations in the chat pane. In 2 rows of
+2, you cannot collapse a conversation.
+
 1. Click the arrow at the left side of the title bar.
 
-A collapsed conversation shows only its title bar and the name of its provider. Its messages do not change. To change
-the height of two conversations, drag the line between them.
+A collapsed conversation shows only its title bar and the name of its provider. Its messages do not change. If a
+collapsed conversation moves next to a different conversation, Lectern expands it.
 
 **Move a conversation**
 
 1. Click the **Conversation** menu (⋯ button) in the title bar.
-2. Select **Move Up** or **Move Down**.
+2. Select **Move Earlier** or **Move Later**.
+
+The conversation moves one position in the order. Its color does not change.
 
 **Close a conversation**
 
@@ -615,12 +679,11 @@ only titles from the first question, set **AI conversation titles** to off (Sett
 **Which conversation gets the question**
 
 - **Ask Lectern** sends the question to the focused conversation. If that conversation is collapsed, Lectern expands
-  it.
+  it. If a different conversation is alone in the chat pane, Lectern shows all conversations again.
 - The **Presets** button of a conversation sends the preset to that conversation.
 - The message field of a conversation sends the question to that conversation.
 
-Lectern keeps the conversations, their order, their titles and the collapsed conversations for the PDF. When you open
-the PDF again, the expanded conversations have equal heights.
+Lectern keeps the conversations, their order, their titles, their colors and the collapsed conversations for the PDF.
 
 ### Ask about a selection
 
@@ -777,6 +840,7 @@ conversation.
 | Lectern | Settings… | ⌘, |
 | File | Open… | ⌘O |
 | File | New Conversation | ⌥⌘N |
+| File | Go to Conversation 1, 2, 3 or 4 (also puts the cursor in its message field) | ⌃⌘1, ⌃⌘2, ⌃⌘3 or ⌃⌘4 |
 | File | Close | ⌘W |
 | File | Close Conversation (the focused conversation) | ⌥⌘W |
 | File | Export Highlights… | ⇧⌘E |
@@ -808,6 +872,7 @@ conversation.
 | Chat pane | Send the question | Return |
 | Chat pane | Start a new line in the question | ⇧Return or ⌥Return |
 | Chat pane | Stop the answer (the focused conversation) | ⌘. |
+| Chat pane | Show all conversations again (in the empty message field of a conversation that is alone) | Esc |
 
 ## Settings
 
@@ -827,6 +892,7 @@ conversation.
 | Models | **Protect purchased credits** | Asks you before a ChatGPT message can use purchased credits. | On |
 | Advanced (Appearance) | **System**, **Light**, **Dark** | Selects the appearance of all Lectern windows. **System** uses the appearance of macOS. | System |
 | Advanced (Appearance) | **Dark Pages** | Shows the pages with inverted colors. The PDF file does not change. | Off |
+| Advanced (Appearance) | **Chat text size** | Sets the text size of the messages and the message fields: **Small**, **Medium**, **Large** or **Extra Large**. **View > Chat Text Size** has the same items. | Medium |
 | Advanced (Claude Code CLI, Codex) | **Path override** | Sets the path of the CLI. If it is empty, Lectern finds the CLI automatically (**Auto-detect**). | Empty |
 | Advanced (Claude Code CLI, Codex) | **Detected** | Shows the CLI that Lectern found. **Reveal in Finder** shows it in Finder. | — |
 | Advanced (Codex) | **Codex home** | Selects **Isolated** or **Shared**. Refer to [Select Isolated or Shared](#select-isolated-or-shared-chatgpt). | Isolated |

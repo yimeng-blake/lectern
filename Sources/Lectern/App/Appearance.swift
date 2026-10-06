@@ -25,6 +25,33 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     }
 }
 
+/// Text size of the chat transcripts (answers and the user's messages) and the message fields: View >
+/// Chat Text Size or Settings. Medium is the original size. Narrow panels keep it.
+enum ChatTextSize: String, CaseIterable, Identifiable {
+    case small, medium, large, extraLarge
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .small: return "Small"
+        case .medium: return "Medium"
+        case .large: return "Large"
+        case .extraLarge: return "Extra Large"
+        }
+    }
+
+    /// Points in the message field; CSS px (`--chat-font-size`) in the transcript.
+    var points: CGFloat {
+        switch self {
+        case .small: return 13
+        case .medium: return 14
+        case .large: return 16
+        case .extraLarge: return 18
+        }
+    }
+}
+
 extension Notification.Name {
     /// Posted when the Dark Pages setting changes; reader windows re-filter their PDF views.
     static let lecternDarkPagesChanged = Notification.Name("lecternDarkPagesChanged")

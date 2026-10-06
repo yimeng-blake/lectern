@@ -155,24 +155,38 @@ private struct PDFPane: View {
 /// (the sidebar opened at 140 or 261 pt instead of 180) and rebuilt a hidden pane (the chat's web view
 /// reloaded every time it was shown). Here hiding collapses a pane and keeps its views; the PDF pane
 /// takes up window resizing; dragging a divider closed hides the sidebar or chat like the menu does.
-/// The chat pane is the window's conversations, stacked top to bottom (ConversationColumnController).
+/// The chat pane is the window's conversations in a grid (ConversationColumnController). When the grid
+/// needs two columns (3–4 conversations), the chat pane widens to fit them, taking the room from the
+/// PDF (never below its minimum; the window keeps its size); with one column again, the previous width
+/// comes back unless the divider was moved meanwhile.
 @MainActor
 final class ReaderSplitViewController: NSSplitViewController {
     static let sidebarRange: ClosedRange<CGFloat> = 140...320
     static let pdfMinimumWidth: CGFloat = 260
     static let chatMinimumWidth: CGFloat = 340
     static let chatDefaultWidth: CGFloat = 440
+    /// Two conversations side by side, 340 pt each, and the divider between them.
+    static let chatTwoColumnWidth: CGFloat = 2 * 340 + 1
     static var minimumWidth: CGFloat { sidebarRange.lowerBound + pdfMinimumWidth + chatMinimumWidth + 2 }
 
     private let reader: ReaderController
+    private let stack: ConversationStack
     private let sidebarItem: NSSplitViewItem
     private let pdfItem: NSSplitViewItem
     private let chatItem: NSSplitViewItem
     private var placedDividers = false
     private var syncing = false
+    /// The column count the chat width last followed (`fitChatToColumns`).
+    private var fittedTwoColumns = false
+    /// The chat width before it widened for two columns, and the width it widened to.
+    private var widenedFrom: CGFloat?
+    private var widenedTo: CGFloat = 0
+    private var chatAnimating = false
+    private var resizingChat = false
 
     init(stack: ConversationStack, reader: ReaderController) {
         self.reader = reader
+        self.stack = stack
         let sidebar = NSHostingController(rootView: ReaderSidebar(controller: reader))
         let pdf = NSHostingController(rootView: PDFPane(stack: stack, reader: reader))
         let chat = ConversationColumnController(stack: stack)
@@ -227,7 +241,9 @@ final class ReaderSplitViewController: NSSplitViewController {
         splitView.setPosition(sidebarWidth, ofDividerAt: 0)
         splitView.setPosition(width - chatWidth - divider, ofDividerAt: 1)
         apply(animated: false)
+        fitChatToColumns()
         observeReader()
+        observeColumns()
     }
 
     /// Mirrors the reader's sidebar and chat visibility (menus, toolbar, restored state).
@@ -250,19 +266,74 @@ final class ReaderSplitViewController: NSSplitViewController {
         for (item, visible) in [(sidebarItem, reader.sidebarVisible), (chatItem, reader.chatVisible)]
         where item.isCollapsed == visible {
             if animated {
-                item.animator().isCollapsed = !visible
+                let isChat = item === chatItem
+                if isChat { chatAnimating = true }
+                NSAnimationContext.runAnimationGroup { _ in
+                    item.animator().isCollapsed = !visible
+                } completionHandler: { [weak self] in
+                    guard isChat else { return }
+                    MainActor.assumeIsolated {
+                        self?.chatAnimating = false
+                        self?.fitChatToColumns()
+                    }
+                }
             } else {
                 item.isCollapsed = !visible
             }
         }
     }
 
-    /// A divider dragged until its pane collapsed (or back open) updates the reader's state.
+    /// Conversations added or closed across the one/two-column line.
+    private func observeColumns() {
+        withObservationTracking {
+            _ = stack.usesTwoColumns
+        } onChange: { [weak self] in
+            DispatchQueue.main.async {
+                self?.fitChatToColumns()
+                self?.observeColumns()
+            }
+        }
+    }
+
+    /// Widens the chat pane for two columns (from the PDF's spare width), or gives back the earlier width
+    /// once one column is left, if the chat still has the width it was given. A hidden chat waits until
+    /// it is shown.
+    private func fitChatToColumns() {
+        guard placedDividers, !chatItem.isCollapsed, !chatAnimating else { return }
+        let twoColumns = stack.usesTwoColumns
+        guard twoColumns != fittedTwoColumns else { return }
+        fittedTwoColumns = twoColumns
+        let width = chatItem.viewController.view.frame.width
+        if twoColumns {
+            let spare = max(0, pdfItem.viewController.view.frame.width - Self.pdfMinimumWidth)
+            let target = min(Self.chatTwoColumnWidth, width + spare)
+            guard target >= width + 1 else { return }
+            setChatWidth(target)
+            widenedFrom = width
+            widenedTo = chatItem.viewController.view.frame.width
+        } else if let from = widenedFrom {
+            widenedFrom = nil
+            if abs(width - widenedTo) < 1 { setChatWidth(from) }
+        }
+    }
+
+    private func setChatWidth(_ width: CGFloat) {
+        resizingChat = true
+        defer { resizingChat = false }
+        splitView.setPosition(splitView.bounds.width - width - splitView.dividerThickness, ofDividerAt: 1)
+    }
+
+    /// A divider dragged until its pane collapsed (or back open) updates the reader's state. A chat
+    /// width changed by hand after widening is kept when the second column goes.
     override func splitViewDidResizeSubviews(_ notification: Notification) {
         super.splitViewDidResizeSubviews(notification)
         guard placedDividers, !syncing else { return }
         if sidebarItem.isCollapsed == reader.sidebarVisible { reader.setSidebarVisible(!sidebarItem.isCollapsed) }
         if chatItem.isCollapsed == reader.chatVisible { reader.setChatVisible(!chatItem.isCollapsed) }
+        if widenedFrom != nil, !resizingChat, !chatAnimating, !chatItem.isCollapsed,
+           abs(chatItem.viewController.view.frame.width - widenedTo) >= 1 {
+            widenedFrom = nil
+        }
     }
 }
 

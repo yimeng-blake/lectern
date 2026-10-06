@@ -20,8 +20,8 @@ struct LecternApp: App {
     }
 }
 
-/// File menu: Open…, Open Recent, New Conversation, Close, Close Conversation, Export Highlights…
-/// and Print… (there is nothing to save);
+/// File menu: Open…, Open Recent, New Conversation, Go to Conversation (⌃⌘1–4), Close, Close
+/// Conversation, Export Highlights… and Print… (there is nothing to save);
 /// Edit > Find, Ask Lectern, Highlight Selection and Add Note…; the viewer's View items; the Go menu.
 /// Viewer commands act on the key reader window's ReaderController and are disabled when no reader
 /// window is key.
@@ -55,7 +55,7 @@ struct ReaderCommands: Commands {
                     .disabled(windows.recentFiles.isEmpty)
             }
             Divider()
-            // Another conversation about this document, below the others (shows the chat if hidden).
+            // Another conversation about this document, after the others (shows the chat if hidden).
             Button("New Conversation") {
                 guard let conversations, conversations.canAddConversation else { return }
                 reader?.setChatVisible(true)
@@ -63,6 +63,20 @@ struct ReaderCommands: Commands {
             }
             .keyboardShortcut("n", modifiers: [.command, .option])
             .disabled(!(conversations?.canAddConversation ?? false))
+            // Conversation N (grid order) takes the focus and its message field the keyboard.
+            Menu("Go to Conversation") {
+                ForEach(0..<ConversationStack.maxConversations, id: \.self) { index in
+                    let model = conversations?.conversations[safe: index]
+                    Button(model?.title ?? "Conversation \(index + 1)") {
+                        guard let conversations else { return }
+                        reader?.setChatVisible(true)
+                        conversations.focusConversation(at: index)
+                    }
+                    .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: [.command, .control])
+                    .disabled(model == nil)
+                }
+            }
+            .disabled(conversations == nil)
         }
         // Replacing .saveItem drops Save/Duplicate/Rename/Revert, and also the standard Close.
         CommandGroup(replacing: .saveItem) {
@@ -169,6 +183,7 @@ private struct ViewerCommands: Commands {
             }
             Divider()
             AppearanceMenu(settings: AppServices.shared.settings)
+            ChatTextSizeMenu(settings: AppServices.shared.settings)
             Divider()
         }
     }
@@ -195,6 +210,22 @@ private struct AppearanceMenu: View {
             .labelsHidden()
             Divider()
             Toggle("Dark Pages", isOn: $settings.darkPages)
+        }
+    }
+}
+
+/// View > Chat Text Size: the transcripts' and message fields' text, in every window.
+@MainActor
+private struct ChatTextSizeMenu: View {
+    @Bindable var settings: SettingsStore
+
+    var body: some View {
+        Menu("Chat Text Size") {
+            Picker("Chat Text Size", selection: $settings.chatTextSize) {
+                ForEach(ChatTextSize.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
         }
     }
 }

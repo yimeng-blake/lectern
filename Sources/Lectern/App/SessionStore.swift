@@ -18,10 +18,12 @@ struct StoredConversation: Codable, Equatable, Identifiable {
     var messages: [ChatMessage]
     /// The panel showed only its title bar.
     var collapsed: Bool
+    /// The conversation's color; nil in files from before colors (the stack assigns them by order).
+    var colorTag: ConversationTag?
 
     init(id: UUID = UUID(), title: String = Self.defaultTitle, titleIsCustom: Bool = false,
          provider: Provider? = nil, claudeSessionId: String? = nil, codexThreadId: String? = nil,
-         messages: [ChatMessage] = [], collapsed: Bool = false) {
+         messages: [ChatMessage] = [], collapsed: Bool = false, colorTag: ConversationTag? = nil) {
         self.id = id
         self.title = title
         self.titleIsCustom = titleIsCustom
@@ -30,10 +32,11 @@ struct StoredConversation: Codable, Equatable, Identifiable {
         self.codexThreadId = codexThreadId
         self.messages = messages
         self.collapsed = collapsed
+        self.colorTag = colorTag
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, titleIsCustom, provider, claudeSessionId, codexThreadId, messages, collapsed
+        case id, title, titleIsCustom, provider, claudeSessionId, codexThreadId, messages, collapsed, colorTag
     }
 
     /// Lenient: a missing or unknown field (a newer Lectern's provider, say) must not cost the messages.
@@ -48,6 +51,7 @@ struct StoredConversation: Codable, Equatable, Identifiable {
         codexThreadId = try c.decodeIfPresent(String.self, forKey: .codexThreadId)
         messages = try c.decodeIfPresent([ChatMessage].self, forKey: .messages) ?? []
         collapsed = (try? c.decodeIfPresent(Bool.self, forKey: .collapsed)) ?? false
+        colorTag = try? c.decodeIfPresent(ConversationTag.self, forKey: .colorTag)
     }
 
     func conversationId(for provider: Provider) -> String? {
@@ -67,7 +71,7 @@ struct StoredSession: Codable, Equatable {
     /// Title of a migrated conversation that has no question to name it after.
     static let migratedTitle = "Conversation"
 
-    /// Top to bottom, as the panels were stacked.
+    /// In order: the panels' positions in the chat pane (see ConversationStack.gridRows).
     var conversations: [StoredConversation]
     /// The conversation Ask Lectern went to.
     var focusedID: UUID?

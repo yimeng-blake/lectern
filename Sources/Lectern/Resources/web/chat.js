@@ -514,6 +514,7 @@
     raf: 0,
     timer: 0,
     forceScroll: true,
+    pinned: true, // the reader is at the end of the transcript
   };
 
   const FIELDS = ['role', 'provider', 'model', 'text', 'status', 'errorText', 'checksKey'];
@@ -610,6 +611,25 @@
 
     if (nearBottom || state.forceScroll) scroller.scrollTop = scroller.scrollHeight;
     state.forceScroll = false;
+  }
+
+  // A reader at the end of the transcript stays there when the panel changes width (the conversation
+  // grid changed, the window resized) or the text size changes.
+  function nearEnd() {
+    const scroller = document.scrollingElement || document.documentElement;
+    return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
+  }
+
+  function keepEnd() {
+    const scroller = document.scrollingElement || document.documentElement;
+    if (state.pinned) scroller.scrollTop = scroller.scrollHeight;
+  }
+
+  /// View > Chat Text Size: every size in chat.css scales from --chat-font-size.
+  function setTextSize(px) {
+    state.pinned = nearEnd();
+    document.documentElement.style.setProperty('--chat-font-size', px + 'px');
+    keepEnd();
   }
 
   const COPY_ICON =
@@ -773,12 +793,16 @@
     escapeHtml,
     copyMessage,
     flushNow() { if (state.scheduled) flush(); },
+    setTextSize,
   };
   root.Lectern = Lectern;
   if (typeof module !== 'undefined' && module.exports) module.exports = Lectern;
 
   if (typeof document !== 'undefined') {
     document.addEventListener('click', onClick);
+    // Resize steps run before scroll steps, so a reflow's scroll clamp can't unpin first.
+    root.addEventListener('scroll', () => { state.pinned = nearEnd(); }, { passive: true });
+    root.addEventListener('resize', keepEnd);
     document.body.classList.add('is-empty');
 
     // KaTeX metrics change when its web fonts arrive; math laid out with fallback fonts can be left

@@ -11,6 +11,8 @@ struct TranscriptWebView: NSViewRepresentable {
     let messages: [ChatMessage]
     /// Default name for saved tables: "<title> - table.csv".
     let documentTitle: String
+    /// Chat Text Size in CSS px: the page's `--chat-font-size`, which every text size there scales from.
+    let textSize: CGFloat
     /// 1-based page, and the sentence that carried the citation.
     let onGoTo: (Int, String?) -> Void
 
@@ -36,6 +38,7 @@ struct TranscriptWebView: NSViewRepresentable {
 
         coordinator.onGoTo = onGoTo
         coordinator.documentTitle = documentTitle
+        coordinator.textSize = textSize
         coordinator.attach(webView)
         coordinator.push(messages)
         return webView
@@ -44,6 +47,7 @@ struct TranscriptWebView: NSViewRepresentable {
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.onGoTo = onGoTo
         context.coordinator.documentTitle = documentTitle
+        context.coordinator.setTextSize(textSize)
         context.coordinator.push(messages)
     }
 
@@ -79,6 +83,7 @@ extension TranscriptWebView {
 
         var onGoTo: (Int, String?) -> Void = { _, _ in }
         var documentTitle = ""
+        var textSize: CGFloat = ChatTextSize.medium.points
 
         private weak var webView: WKWebView?
         private var loadedURL: URL?
@@ -118,6 +123,18 @@ extension TranscriptWebView {
         }
 
         // MARK: Pushing state
+
+        /// Applied at once to a loaded page; a page still loading gets it before it is shown.
+        func setTextSize(_ size: CGFloat) {
+            guard size != textSize else { return }
+            textSize = size
+            guard pageReady, let webView else { return }
+            webView.evaluateJavaScript(Self.textSizeScript(size))
+        }
+
+        private static func textSizeScript(_ size: CGFloat) -> String {
+            "Lectern.setTextSize(\(Int(size.rounded())))"
+        }
 
         func push(_ messages: [ChatMessage]) {
             latest = messages
@@ -274,9 +291,12 @@ extension TranscriptWebView {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            webView.isHidden = false
             pageReady = true
             resetPageState()
+            // Shown once the text size applies, so the page never appears at the default size first.
+            webView.evaluateJavaScript(Self.textSizeScript(textSize)) { [weak webView] _, _ in
+                webView?.isHidden = false
+            }
             scheduleFlush()
         }
 

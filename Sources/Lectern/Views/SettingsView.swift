@@ -361,6 +361,9 @@ private struct AdvancedSettings: View {
                 }
                 .pickerStyle(.segmented)
                 Toggle("Dark Pages (inverted page colors; the PDF does not change)", isOn: $settings.darkPages)
+                Picker("Chat text size", selection: $settings.chatTextSize) {
+                    ForEach(ChatTextSize.allCases) { Text($0.title).tag($0) }
+                }
             }
             Section("Claude Code CLI") {
                 TextField("Path override", text: $settings.claudePathOverride, prompt: Text("Auto-detect"))

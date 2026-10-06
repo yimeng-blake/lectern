@@ -7,7 +7,7 @@ about the PDF. Lectern uses your Claude and ChatGPT plans. It sends your questio
 (CLIs) from Anthropic and OpenAI: Claude Code for Claude and Codex for ChatGPT.
 
 The answers have page citations, for example `[p. 12]`. Each citation is a link to its page. For each PDF, you can
-have up to 4 conversations, one above the other. Lectern gives each conversation a short title about its topic.
+have up to 4 conversations, in 1 or 2 columns. Lectern gives each conversation a short title about its topic.
 
 ## Before you start
 
@@ -157,8 +157,8 @@ The [Lectern guide](docs/GUIDE.md) gives more information about these items:
 - [Settings](docs/GUIDE.md#settings)
 - [Use the viewer](docs/GUIDE.md#use-the-viewer): pages, sidebar, zoom, search, highlights, print and appearance
 - [Use the chat pane](docs/GUIDE.md#use-the-chat-pane): models, **Fast**, purchased credits and context
-- [Use more than one conversation](docs/GUIDE.md#use-more-than-one-conversation): add, focus, rename, collapse, move
-  and close conversations, and automatic titles
+- [Use more than one conversation](docs/GUIDE.md#use-more-than-one-conversation): add, focus, show alone, rename,
+  collapse, move and close conversations, text size and titles
 - [Ask about a selection](docs/GUIDE.md#ask-about-a-selection), [Presets](docs/GUIDE.md#presets),
   [Citation check badges](docs/GUIDE.md#citation-check-badges), [Save a table as CSV](docs/GUIDE.md#save-a-table-as-csv)
   and [Scanned PDFs (OCR) and table pages](docs/GUIDE.md#scanned-pdfs-ocr-and-table-pages)

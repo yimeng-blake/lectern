@@ -43,10 +43,17 @@ final class ChatModel: Identifiable {
     var isCollapsed: Bool {
         didSet { if isCollapsed != oldValue { persist() } }
     }
+    /// The conversation's color (title bar dot and line, focus ring). Set by the stack when the
+    /// conversation is created or restored; saved.
+    var colorTag: ConversationTag
     /// Bumped to put the keyboard focus in this conversation's input (a new conversation).
     private(set) var inputFocusRequest = 0
     /// Ask Lectern and the conversation commands go to this conversation.
     var isFocused: Bool { stack?.focusedID == id }
+    /// Shown alone in the chat pane (its title bar's maximize button).
+    var isMaximized: Bool { stack?.maximizedID == id }
+    /// The transcript's and the message field's text size (app setting).
+    var chatTextSize: ChatTextSize { settingsStore.chatTextSize }
 
     /// Switching keeps both conversations.
     var provider: Provider {
@@ -159,6 +166,7 @@ final class ChatModel: Identifiable {
         title = stored?.title ?? Self.defaultTitle
         titleIsCustom = stored?.titleIsCustom ?? false
         isCollapsed = stored?.collapsed ?? false
+        colorTag = stored?.colorTag ?? .blue
         for p in Provider.allCases {
             builders[p] = ContextBuilder(document: document)
         }
@@ -182,7 +190,7 @@ final class ChatModel: Identifiable {
     var stored: StoredConversation {
         StoredConversation(id: id, title: title, titleIsCustom: titleIsCustom, provider: provider,
                            claudeSessionId: conversationIds[.claude], codexThreadId: conversationIds[.codex],
-                           messages: messages, collapsed: isCollapsed)
+                           messages: messages, collapsed: isCollapsed, colorTag: colorTag)
     }
 
     // MARK: Actions
@@ -297,6 +305,11 @@ final class ChatModel: Identifiable {
     /// Asks the panel to put the keyboard focus in its input.
     func requestInputFocus() {
         inputFocusRequest += 1
+    }
+
+    /// Shows this conversation alone in the chat pane, or all of them again.
+    func toggleMaximize() {
+        stack?.toggleMaximize(id)
     }
 
     /// A notice in the transcript (e.g. the second-window note).

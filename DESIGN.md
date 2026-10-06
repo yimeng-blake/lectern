@@ -60,8 +60,9 @@ Sources/Lectern/App/*                           (App agent) LecternApp (+ AppDel
                                                             SettingsStore, SessionStore, ConversationStack,
                                                             ChatModel, ChatMessage, HighlightStore
 Sources/Lectern/Views/DocumentWindow.swift      (App agent)
-Sources/Lectern/Views/ConversationStackView.swift (App agent) ConversationColumnController, ConversationPanel,
-                                                            title bar, New Conversation bar, ConversationActions
+Sources/Lectern/Views/ConversationStackView.swift (App agent) ConversationColumnController (the grid),
+                                                            ConversationPanel, title bar, New Conversation bar,
+                                                            ConversationActions
 Sources/Lectern/Views/SettingsView.swift        (App agent)
 scripts/build-app.sh, scripts/package-release.sh, VERSION, README.md   (App agent)
 ```
@@ -91,24 +92,32 @@ struct ChatMessage: Identifiable, Codable, Equatable {
 }
 
 // Sources/Lectern/App/ConversationStack.swift — one per document window (see "Conversations" below)
+enum ConversationTag: Int, CaseIterable, Codable { case blue, green, orange, purple; var hex: UInt32 }
 @MainActor @Observable final class ConversationStack {
     static let maxConversations = 4
+    static func gridRows(count: Int) -> [[Int]]   // [[0]] · [[0],[1]] · [[0,1],[2]] · [[0,1],[2,3]]
     let document: ReaderDocument
     var readingState: ReadingState          // written by PDFReaderView; shared by every conversation
     var passageRequest: PassageRequest?     // PDFReaderView goes to the page (and the claim's passage), then sets nil
-    private(set) var conversations: [ChatModel]   // top to bottom, never empty
+    private(set) var conversations: [ChatModel]   // in order = grid position; never empty
     private(set) var focusedID: UUID?
+    private(set) var maximizedID: UUID?     // shown alone in the chat pane; not saved
     var focused: ChatModel? { get }         // focusedID's conversation, else the first
     var canAddConversation: Bool { get }    // < maxConversations
     var canCloseConversation: Bool { get }  // > 1
+    var usesTwoColumns: Bool { get }        // > 2 conversations
+    func canCollapse(_ id: UUID) -> Bool    // alone in its grid row, with others in the pane
     let isSecondaryWindow: Bool
     init(document:services:settings:sessionStore:secondary:titler:onConversationCreated:)  // restores the saved ones
     convenience init(document: ReaderDocument, services: AppServices)   // wires ConversationTitler + register
-    @discardableResult func addConversation() -> ChatModel?   // at the bottom, focused, input focus; nil at the limit
+    @discardableResult func addConversation() -> ChatModel?   // last, first free color, focused, input focus,
+                                            // grid shown again; nil at the limit
     func closeConversation(_ id: UUID)      // detach (stack = nil), shut down, refocus the next one, save; not the last
     func canMoveConversation(_ id: UUID, by offset: Int) -> Bool
-    func moveConversation(_ id: UUID, by offset: Int)   // Move Up (-1) / Move Down (+1); saves
+    func moveConversation(_ id: UUID, by offset: Int)   // Move Earlier (-1) / Move Later (+1); saves
     func focus(_ id: UUID)                  // not saved by itself (the next change saves it)
+    func focusConversation(at index: Int)   // ⌃⌘1–4: focus + input focus; opens it; ends another's maximize
+    func toggleMaximize(_ id: UUID)         // ⤢ / ⤡ (and Esc in the empty field); maximizing focuses and opens it
     func ask(_ action: SelectionAction, selection: String, pages: [Int])  // Ask Lectern → focused (expanded first)
     func goTo(page: Int, claim: String? = nil)  // sets passageRequest
     func shutdown()                         // window closed: every conversation shuts down, one save at the end
@@ -126,8 +135,12 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     var readingState: ReadingState { get }  // the stack's
     private(set) var title: String          // automatic until renamed; StoredConversation.defaultTitle at first
     private(set) var titleIsCustom: Bool
-    var isCollapsed: Bool                   // saved on change
+    var isCollapsed: Bool                   // saved on change; only when the stack's canCollapse (else reopened)
+    var colorTag: ConversationTag           // set by the stack (saved tag, else the first free one); saved
     var isFocused: Bool { get }
+    var isMaximized: Bool { get }
+    var chatTextSize: ChatTextSize { get }  // the app setting
+    func toggleMaximize()
     var isAnyBusy: Bool { get }             // a turn runs for either provider
     var hasUserMessages: Bool { get }
     var stored: StoredConversation { get }  // what the stack saves
@@ -173,8 +186,9 @@ struct ChatMessage: Identifiable, Codable, Equatable {
 Views:
 
 ```swift
-struct ChatPaneView: View { @Bindable var model: ChatModel }   // one conversation, under its title bar
-final class ConversationColumnController: NSViewController     // the chat pane: the stack's panels
+struct ChatPaneView: View { @Bindable var model: ChatModel }   // one conversation, under its title bar;
+                                            // compact at width <= ChatPaneView.compactWidth (420)
+final class ConversationColumnController: NSViewController     // the chat pane: the stack's panels in a grid
 struct PDFReaderView: NSViewRepresentable {
     let document: ReaderDocument
     let controller: ReaderController
@@ -184,9 +198,11 @@ struct PDFReaderView: NSViewRepresentable {
 struct TranscriptWebView: NSViewRepresentable {
     let messages: [ChatMessage]
     let documentTitle: String               // default name for a saved table: "<title> - table.csv"
+    let textSize: CGFloat                   // Chat Text Size, CSS px → Lectern.setTextSize (before the page shows)
     let onGoTo: (Int, String?) -> Void      // 1-based page, claim (the sentence around the citation)
 }
 // chat.js → Swift messages: goto {page, claim} · copy · open · saveCSV {csv, name} · resync
+// Swift → chat.js: Lectern.sync(items) · Lectern.setTextSize(px)
 ```
 
 Citation checks: when an answer completes, ChatModel runs `CitationVerifier.verify` off the main
@@ -195,8 +211,19 @@ numbers each bracketed citation in order (`[p. 2, 4]` is one), skipping code and
 way the verifier does, and puts ✓ (verified) or ⚠ (partial, notFound, pageMissing) after it. When the
 count or the lowest page at any ordinal differs, that message shows no badges. Finished tables get
 "Copy CSV" / "Save CSV…" (RFC 4180, UTF-8 with BOM, a leading `'` before formula-like cells).
-Presets: a menu next to the image and whole-document toggles, grouped General / Finance
-(`ChatPreset.all`), disabled while busy, while the credits guard holds a question, or when not signed in.
+Presets: a menu next to the image and whole-document toggles (in compact panels, a submenu of the "+"
+menu), grouped General / Finance (`ChatPreset.all`), disabled while busy, while the credits guard holds a
+question, or when not signed in.
+
+Text sizes: View > Chat Text Size (and Settings > Advanced > Appearance) = Small 13 / Medium 14 (default,
+the original size) / Large 16 / Extra Large 18, `SettingsStore.chatTextSize`, applied live. The transcript
+gets it as `--chat-font-size` (`Lectern.setTextSize(px)`; a reader at the end of the transcript stays
+there, also when the panel's width changes); every size in chat.css is `calc(N * var(--px))`, N px at
+Medium (headings, code, KaTeX and citation badges are em-based), so Medium renders exactly as before. The
+message field and its placeholder use the same size in points. The chrome is one step larger than it
+was: regular-size pickers and input buttons, account/usage chips and the context hint in `.callout`, the
+resolved model in `.subheadline` `.secondary`, title bars in `.body` semibold. Narrow panels keep every
+size and combine controls instead (see Conversations).
 
 ## Service constructors (LecternCore)
 
@@ -603,11 +630,12 @@ were verified against 0.159.2.
 - SettingsStore (UserDefaults): per-provider default TurnSettings (Claude: model "", effort "";
   Codex: model = catalog default, effort = its default, fastTier false), protectCredits (true),
   codexHomeMode ("isolated"), claudePathOverride, codexPathOverride, neighborRadius (1), lastProvider,
-  aiConversationTitles (true).
+  aiConversationTitles (true), chatTextSize ("medium").
 - SessionStore: `AppPaths.sessions/<contentHash>.json`, version 2 =
   `{version: 2, conversations: [StoredConversation], focusedID, viewer}` with StoredConversation =
-  `{id, title, titleIsCustom, provider?, claudeSessionId?, codexThreadId?, messages, collapsed}`, top to
-  bottom. Conversation ids saved only after a turn completes; saved after each turn and each stack change.
+  `{id, title, titleIsCustom, provider?, claudeSessionId?, codexThreadId?, messages, collapsed, colorTag?}`
+  (colorTag 0–3; files without it get colors by order), in grid order. Conversation ids saved only after
+  a turn completes; saved after each turn and each stack change.
   A reopened document starts with fresh ContextBuilders (all context re-sent once). Decoding is lenient
   (unknown provider, missing fields). Version 1 files (`{claudeSessionId, codexThreadId, messages,
   viewer}`) load as one conversation titled `fallbackTitle(first question)` ("Conversation" without one);
@@ -645,35 +673,73 @@ were verified against 0.159.2.
 - Settings window tabs: **Accounts** (per provider: status, account; Claude: Log in in Terminal /
   Verify connection; ChatGPT: Sign in with ChatGPT / device code / Sign out (isolated only); quota), **Models** (defaults,
   fast tier toggle with "uses ~2.5× your included usage", protect-credits toggle), **Advanced**
-  (binary path overrides with detected path shown, Codex home mode, context radius, Conversations: "AI
-  conversation titles").
+  (Appearance incl. chat text size, binary path overrides with detected path shown, Codex home mode,
+  context radius, Conversations: "AI conversation titles").
 
-## Conversations (stacked chat panels)
+## Conversations (chat panels in a grid)
 
-Each document window has a `ConversationStack` of 1–4 conversations (`ChatModel`s), shown top to bottom
-in the chat pane. Each conversation has its own provider choice, Claude session, Codex thread, context
-builders, messages, title and collapsed state; the stack owns the shared reading state, citation
-jumps, the focus and the saved file.
+Each document window has a `ConversationStack` of 1–4 conversations (`ChatModel`s), laid out in the chat
+pane by count: 1 fills it, 2 are stacked, 3 are two side by side over one full-width, 4 are a 2×2 grid
+(`ConversationStack.gridRows`). The order is the position (1 top-left, 2 top-right, 3 bottom-left or the
+full-width bottom, 4 bottom-right). Each conversation has its own provider choice, Claude session, Codex
+thread, context builders, messages, title, color and collapsed state; the stack owns the shared reading
+state, citation jumps, the focus, the one shown alone and the saved file.
 
-- **Pane** (`ConversationColumnController`, Views/ConversationStackView.swift): an AppKit `NSSplitView`
-  (`isVertical = false`, thin dividers) over a 30 pt "+ New Conversation" bar. Panels are
-  `NSHostingView(ConversationPanel)` with no sizing or scene bridging; sync via
-  `withObservationTracking` on `conversations` and each `isCollapsed`. Panels are reordered or hidden, not
-  rebuilt, so a transcript's web view keeps its page. Expanded panels share the height in proportion to
-  their last heights (divider drags and window resizes update the shares; reopening splits equally, as
-  heights aren't saved). Collapsed = the 30 pt title bar only; a divider next to one doesn't move.
-  Dividers stop at 200 pt per expanded panel (an equal share when the pane is shorter).
+- **Pane** (`ConversationColumnController`, Views/ConversationStackView.swift): nested AppKit split views
+  (thin dividers) over a 30 pt "+ New Conversation" bar: a vertical stack of rows, each row an
+  `NSSplitView` split into its one or two panels. A panel is a container (`NSHostingView(ConversationPanel)`,
+  no sizing or scene bridging, plus the focus ring view) synced via `withObservationTracking` on
+  `conversations`, `maximizedID`, `focusedID` and each `isCollapsed`. Panels are never rebuilt: one that
+  changes row or column first moves into a holder view in the same window, then into its new row; panels
+  not shown stay in the holder, hidden themselves (a hidden *holder* left transcripts blank after they
+  moved out: WebKit only notices visibility changes from the panel's own hiding). The first responder is
+  restored after a move.
+- **Proportions**: row heights and each two-column row's first-column share are kept and applied on
+  every layout (whole points, rounded). Only a divider drag changes them: a resize notification whose
+  frames differ from what the layout would give (AppKit tags every resize with the divider index, so
+  that can't tell). Rows that stay keep their share, a new row gets the average, and a row that gains a
+  second column lines it up with the other row (else halves). Reopening splits equally (not saved).
+  Dividers stop at 200 pt per open row and 300 pt per column (an equal share when the pane is smaller).
+- **Folding**: only a panel alone in its row with others in the pane folds (chevron) to its 32 pt title
+  bar (`canCollapse`); a folded panel that comes to share a row, or becomes the only one, opens again
+  (`openUnfoldable`, after add/close/move and at restore). A divider next to a folded row doesn't move;
+  when every row is folded the last takes the leftover space.
+- **Show alone** (maximize): ⤢ in each title bar (more than one conversation) shows that conversation
+  alone in the whole conversation area, focused and opened; the button becomes ⤡. ⤡, Esc in its message
+  field when empty, ⌃⌘N for another conversation, Ask Lectern for another, and New Conversation show the
+  grid again, with its proportions. Not saved.
+- **Compact panels** (width ≤ 420 pt, from the panel's own width via GeometryReader;
+  `ChatPaneView.compactWidth`): the header is one row: a menu "Claude · Opus · Medium" (truncating;
+  sections Provider / Model / Reasoning Effort, a "Fast (Priority Tier)" toggle for ChatGPT models with a
+  fast tier, and "Last answer: <model>"), the account as a colored dot (account and usage in its
+  tooltip) with the highest usage percentage, and New chat. The input is one row: a "+" menu (Attach Page
+  Image and Whole Document with checkmarks, Presets ▸, the context hint as a disabled line; tinted while a
+  toggle is on), the field, Send. Wide panels keep the separate pickers (falling back to the combined
+  menu when long names don't fit), chips and the toggles row with the context hint. chat.css
+  `@media (max-width: 420px)` keeps the text size and tightens padding/margins, lets user bubbles take
+  92%, and shrinks the table export buttons; tables scroll sideways in `.table-wrap`. Banner buttons stack
+  when they don't fit.
+- **Color tags** (`ConversationTag`: blue #2F5BEA, green #2E9E6B, orange #E07A2E, purple #8A4FD8): the
+  first free one at creation, saved as `colorTag`; moving keeps it. Shown as a dot before the title and a
+  3 pt line over the title bar, which is tinted with it (6 %, focused 16 %).
 - **Focus**: a local left/right mouse-down monitor focuses the panel under the click; focusing the input
-  or running a preset focuses its conversation. A new conversation takes focus and its input the
-  keyboard focus. With more than one panel the focused title bar is tinted with the accent color.
-  `focusedID` is saved with the next change. Ask Lectern (`ReaderController.onAsk` → `stack.ask`) goes to
-  the focused conversation and expands it; ⌘. (Stop) is bound only in the focused panel.
-- **Title bar**: chevron (collapse/expand), title (double-click → inline field: Return or clicking away
-  commits, Esc cancels, empty → automatic title), a spinner while either provider answers, the provider
-  name when collapsed, and a "⋯" menu: Rename…, New Chat (`clearConversation`, disabled while busy),
-  Move Up, Move Down, Close Conversation. Close and New Chat ask first (NSAlert sheet) when the
-  conversation has user messages; the last conversation can't be closed. The header's pencil "New chat"
-  still resets only the selected provider's conversation.
+  or running a preset focuses its conversation; ⌃⌘1–4 focus conversation N and put the cursor in its
+  field. A new conversation takes focus and its input the keyboard focus. With more than one panel on
+  screen the focused one has a 2 pt ring in its color (an AppKit view over the panel, so it draws above
+  the web view) and the stronger tint; the others' titles are secondary. `focusedID` is saved with the
+  next change. Ask Lectern (`ReaderController.onAsk` → `stack.ask`) goes to the focused conversation and
+  expands it; ⌘. (Stop) is bound only in the focused panel.
+- **Title bar** (32 pt): chevron (only when it can fold), color dot, title (double-click → inline field:
+  Return or clicking away commits, Esc cancels, empty → automatic title), a spinner while either provider
+  answers, the provider name when folded, ⤢/⤡, and a "⋯" menu: Rename…, New Chat (`clearConversation`,
+  disabled while busy), Move Earlier, Move Later, Close Conversation. Close and New Chat ask first (NSAlert
+  sheet) when the conversation has user messages; the last conversation can't be closed. The header's
+  pencil "New chat" still resets only the selected provider's conversation.
+- **Chat width**: when the grid needs two columns (3–4 conversations), `ReaderSplitViewController` widens
+  the chat pane to 2 × 340 + 1 pt, taking the room from the PDF (never below its 260 pt minimum; the window
+  keeps its size), on the transition (also at window open, and when a hidden chat is shown again). Back to
+  one column, the earlier width returns if the chat still has the width it was given (a divider drag in
+  between keeps the user's width).
 - **Titles**: when the first answer of a conversation completes, the title becomes
   `ConversationTitler.fallbackTitle(question)` (the shown user message, e.g. "Explain: “…”") and is saved
   with the turn; then, if `aiConversationTitles` and not renamed, `ConversationTitler.title` runs off the
@@ -684,9 +750,16 @@ jumps, the focus and the saved file.
   no quotes or period." + question + answer. The reply is cleaned (first line, no markdown, "Title:"/"标题："
   labels, quotes or trailing punctuation, ≤ 48 chars). A nil title keeps the fallback (no retry).
   Clearing a custom name goes back to the last automatic title (or re-titles from the first exchange).
-- **Menus**: File > New Conversation (⌥⌘N; shows the chat pane if hidden; disabled at 4) and File >
-  Close Conversation (⌥⌘W; the focused conversation; disabled with one conversation or the chat
-  hidden). Like the viewer menus they need a key reader window.
+- **Menus**: File > New Conversation (⌥⌘N; shows the chat pane if hidden; disabled at 4), File > Go to
+  Conversation ▸ (items titled like the conversations, ⌃⌘1–⌃⌘4; shows the chat pane) and File > Close
+  Conversation (⌥⌘W; the focused conversation; disabled with one conversation or the chat hidden). Like
+  the viewer menus they need a key reader window.
+- **Layout test**: no test target (Package.swift is fixed). An offscreen harness (outside the repo) builds
+  the app sources except LecternApp/AppServices with a stub AppServices and fake ProviderServices, puts
+  `ReaderSplitViewController` in a borderless window ordered in offscreen behind everything (never
+  activated; WebKit occlusion detection off for the test), and checks 1–4 conversations at window widths
+  1400 and 1100 (frames, minimums, chat widening/restoring, compact forms, CSS padding/font size, colors,
+  show alone + Esc, ⌃⌘N focus, text sizes, transcripts keeping their pages), with window captures.
 - **Probe**: `lectern-probe title --provider claude|codex [--home shared|isolated] --question Q --answer A`
   prints the fallback, auth, (Codex) credits check and model, then the title and its time (exit 0 title,
   1 nil, 2 usage). It also starts a Codex app-server for reads only.
@@ -749,7 +822,8 @@ Nothing here writes to the PDF (no save; highlights are in-memory annotations on
   toggle. A new window's focus goes to the PDF, not the page box.
 - **Layout**: `ReaderSplitViewController` (an `NSSplitViewController` in a representable): sidebar item
   (140–320 pt, starts at 180, collapsible), PDF (min 260, lowest holding priority, so it takes window
-  resizing), chat (`ConversationColumnController`; min 340, starts at 440, collapsible). Hiding collapses a pane and keeps its views
+  resizing), chat (`ConversationColumnController`; min 340, starts at 440, widened for two columns — see
+  Conversations — collapsible). Hiding collapses a pane and keeps its views
   (the chat's web view isn't reloaded); dragging a divider closed updates the controller. SwiftUI's
   `HSplitView` was dropped: it can't set initial divider positions and rebuilt hidden panes.
 - **Sidebar**: segmented picker at the top: Thumbnails, Table of Contents (only when the PDF has an
@@ -788,7 +862,7 @@ Nothing here writes to the PDF (no save; highlights are in-memory annotations on
 
   | Menu | Item | Key |
   |---|---|---|
-  | File | New Conversation · Close Conversation (the focused one) — see Conversations | ⌥⌘N · ⌥⌘W |
+  | File | New Conversation · Go to Conversation ▸ 1–4 · Close Conversation (the focused one) — see Conversations | ⌥⌘N · ⌃⌘1–⌃⌘4 · ⌥⌘W |
   | File | Print… (the PDF via `PDFDocument.printOperation`, scaled down to fit; disabled if the PDF forbids printing) | ⌘P |
   | Edit > Find | Find… / Find Next / Find Previous / Use Selection for Find | ⌘F / ⌘G / ⇧⌘G / ⌘E |
   | File | Export Highlights… (disabled without highlights) | ⇧⌘E |
@@ -797,6 +871,7 @@ Nothing here writes to the PDF (no save; highlights are in-memory annotations on
   | View | Hide/Show Chat | ⌃⌘C |
   | View | Actual Size · Zoom to Fit · Zoom to Width · Zoom In · Zoom Out | ⌘0 · ⌘9 · – · ⌘+ (and ⌘=) · ⌘− |
   | View | Single Page / Single Page Continuous / Two Pages / Two Pages Continuous (checkmark) | – |
+  | View | Appearance ▸ · Chat Text Size ▸ Small / Medium / Large / Extra Large (checkmark; no reader window needed) | – |
   | Go | Previous Page · Next Page · First Page · Last Page | ⌥⌘↑ · ⌥⌘↓ · ⌥⌘Home · ⌥⌘End |
   | Go | Back · Forward · Go to Page… (focuses and selects the page box) | ⌘[ · ⌘] · ⌥⌘G |
 

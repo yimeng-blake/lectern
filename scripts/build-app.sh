@@ -136,7 +136,12 @@ cp "$BIN_DIR/Lectern" "$APP/Contents/MacOS/Lectern"
 # home folder) in a binary that may be shared. Function names stay for crash reports. The linker's
 # signature goes first so strip doesn't warn; the bundle is signed below.
 codesign --remove-signature "$APP/Contents/MacOS/Lectern"
-strip -S "$APP/Contents/MacOS/Lectern"
+if ! strip -S "$APP/Contents/MacOS/Lectern"; then
+    # Some strip versions (Command Line Tools 16) can't read every binary without its signature.
+    echo "Stripping the signed binary instead"
+    cp "$BIN_DIR/Lectern" "$APP/Contents/MacOS/Lectern"
+    strip -S -no_code_signature_warning "$APP/Contents/MacOS/Lectern"
+fi
 # The chat page is not a SwiftPM resource (see Package.swift); the app loads it from Contents/Resources/web.
 # -X: don't copy the sources' extended attributes (such as com.apple.provenance) into the bundle.
 cp -RX "$ROOT/Sources/Lectern/Resources/web" "$APP/Contents/Resources/web"
