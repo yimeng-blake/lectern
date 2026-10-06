@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<!-- Lectern app icon, master artwork (used for 128 px and up).
+     macOS grid: 824 x 824 tile centered on 1024, corner radius 185, transparent outside.
+     Mark: a closing quote pair (accent #2F5BEA) floating over an open book (ink #191919). -->
+<defs>
+  <filter id="tileShadow" x="-10%" y="-10%" width="120%" height="125%">
+    <feGaussianBlur stdDeviation="14"/>
+  </filter>
+</defs>
+<!-- soft drop shadow, inside the 100 px margin -->
+<rect x="104" y="112" width="816" height="816" rx="185" fill="#000" opacity="0.09" filter="url(#tileShadow)"/>
+<!-- flat white tile with a 2 px hairline edge -->
+<rect x="100" y="100" width="824" height="824" rx="185" fill="#FFFFFF"/>
+<rect x="101" y="101" width="822" height="822" rx="184" fill="none" stroke="#E6E4E0" stroke-width="2"/>
+<!-- closing quote pair -->
+<g fill="#2F5BEA">
+  <path d="M501.0,335.9 A96.8,96.8 0 0 1 439.3,426.1 A88.0,88.0 0 0 0 452.4,379.7 A44.0,44.0 0 1 1 501.0,335.9 Z"/>
+  <path d="M611.0,335.9 A96.8,96.8 0 0 1 549.3,426.1 A88.0,88.0 0 0 0 562.4,379.7 A44.0,44.0 0 1 1 611.0,335.9 Z"/>
+</g>
+<!-- open book: two curved pages, rounded by a 32 px stroke of the same ink -->
+<g fill="#191919" stroke="#191919" stroke-width="32" stroke-linejoin="round">
+  <path d="M483.0,522.1 C439.5,478.9 347.3,474.1 309.0,474.1 L309.0,648.1 C347.3,648.1 439.5,652.9 483.0,696.1 Z"/>
+  <path d="M541.0,522.1 C584.5,478.9 676.7,474.1 715.0,474.1 L715.0,648.1 C676.7,648.1 584.5,652.9 541.0,696.1 Z"/>
+</g>
+</svg>

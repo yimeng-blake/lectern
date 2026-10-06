@@ -1,0 +1,18 @@
+# SwiftPM / Xcode build products
+.build/
+build/
+dist/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Generated Codex app-server protocol bindings (~3 MB). Regenerate them locally; see DESIGN.md.
+docs/codex-app-server-*-ts/
+docs/codex-app-server-ts/
