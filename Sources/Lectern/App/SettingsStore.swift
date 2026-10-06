@@ -19,6 +19,7 @@ final class SettingsStore {
         static let darkPages = "darkPages"
         static let aiConversationTitles = "aiConversationTitles"
         static let chatTextSize = "chatTextSize"
+        static let chatFont = "chatFont"
     }
 
     @ObservationIgnored private let defaults: UserDefaults
@@ -83,6 +84,9 @@ final class SettingsStore {
     }
 
     /// Every open transcript and message field follows it at once.
+    var chatFont: ChatFont {
+        didSet { defaults.set(chatFont.rawValue, forKey: Key.chatFont) }
+    }
     var chatTextSize: ChatTextSize {
         didSet { defaults.set(chatTextSize.rawValue, forKey: Key.chatTextSize) }
     }
@@ -109,6 +113,7 @@ final class SettingsStore {
         darkPages = defaults.bool(forKey: Key.darkPages)
         aiConversationTitles = defaults.object(forKey: Key.aiConversationTitles) as? Bool ?? true
         chatTextSize = defaults.string(forKey: Key.chatTextSize).flatMap(ChatTextSize.init(rawValue:)) ?? .medium
+        chatFont = defaults.string(forKey: Key.chatFont).flatMap(ChatFont.init(rawValue:)) ?? .system
     }
 
     /// Called at launch and on every change; every window, including Settings, follows NSApp.

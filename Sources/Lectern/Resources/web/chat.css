@@ -3,6 +3,8 @@
   /* Chat Text Size (TranscriptWebView sets it; 14px = Medium). Every text size here scales from it:
      calc(N * var(--px)) is N px at Medium. */
   --chat-font-size: 14px;
+  /* Chat Font (TranscriptWebView sets it). Code and math keep their monospaced faces. */
+  --chat-font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", system-ui, sans-serif;
   --px: calc(var(--chat-font-size) / 14);
   --fg: #1d1d1f;
   --fg-2: #5f5f64;
@@ -54,7 +56,7 @@ html {
 
 body {
   color: var(--fg);
-  font: var(--chat-font-size)/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  font: var(--chat-font-size)/1.55 var(--chat-font-family);
   -webkit-font-smoothing: antialiased;
   -webkit-text-size-adjust: 100%;
   overflow-wrap: break-word;

@@ -54,6 +54,7 @@ final class ChatModel: Identifiable {
     var isMaximized: Bool { stack?.maximizedID == id }
     /// The transcript's and the message field's text size (app setting).
     var chatTextSize: ChatTextSize { settingsStore.chatTextSize }
+    var chatFont: ChatFont { settingsStore.chatFont }
 
     /// Switching keeps both conversations.
     var provider: Provider {

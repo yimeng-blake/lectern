@@ -626,6 +626,13 @@
   }
 
   /// View > Chat Text Size: every size in chat.css scales from --chat-font-size.
+  /// View > Chat Font: the transcript's font family (code and math stay monospaced).
+  function setFont(family) {
+    state.pinned = nearEnd();
+    document.documentElement.style.setProperty('--chat-font-family', family);
+    keepEnd();
+  }
+
   function setTextSize(px) {
     state.pinned = nearEnd();
     document.documentElement.style.setProperty('--chat-font-size', px + 'px');
@@ -794,6 +801,7 @@
     copyMessage,
     flushNow() { if (state.scheduled) flush(); },
     setTextSize,
+    setFont,
   };
   root.Lectern = Lectern;
   if (typeof module !== 'undefined' && module.exports) module.exports = Lectern;

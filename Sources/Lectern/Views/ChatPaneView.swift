@@ -35,7 +35,8 @@ private struct TranscriptSection: View {
 
     var body: some View {
         TranscriptWebView(messages: model.messages, documentTitle: model.document.title,
-                          textSize: model.chatTextSize.points) { page, claim in
+                          textSize: model.chatTextSize.points,
+                          fontFamily: model.chatFont.cssFamily) { page, claim in
             model.goTo(page: page, claim: claim)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -115,7 +116,7 @@ private struct ChatInputArea: View {
 
     // MARK: Editor
 
-    private var editorFont: Font { .system(size: model.chatTextSize.points) }
+    private var editorFont: Font { .system(size: model.chatTextSize.points, design: model.chatFont.design) }
 
     private var editor: some View {
         // The hidden Text sizes the box (1 to 7 lines) and the editor overlays it, scrolling beyond that.

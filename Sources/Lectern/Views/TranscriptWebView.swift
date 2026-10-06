@@ -13,6 +13,8 @@ struct TranscriptWebView: NSViewRepresentable {
     let documentTitle: String
     /// Chat Text Size in CSS px: the page's `--chat-font-size`, which every text size there scales from.
     let textSize: CGFloat
+    /// Chat Font: the page's `--chat-font-family`.
+    let fontFamily: String
     /// 1-based page, and the sentence that carried the citation.
     let onGoTo: (Int, String?) -> Void
 
@@ -39,6 +41,7 @@ struct TranscriptWebView: NSViewRepresentable {
         coordinator.onGoTo = onGoTo
         coordinator.documentTitle = documentTitle
         coordinator.textSize = textSize
+        coordinator.fontFamily = fontFamily
         coordinator.attach(webView)
         coordinator.push(messages)
         return webView
@@ -48,6 +51,7 @@ struct TranscriptWebView: NSViewRepresentable {
         context.coordinator.onGoTo = onGoTo
         context.coordinator.documentTitle = documentTitle
         context.coordinator.setTextSize(textSize)
+        context.coordinator.setFontFamily(fontFamily)
         context.coordinator.push(messages)
     }
 
@@ -84,6 +88,7 @@ extension TranscriptWebView {
         var onGoTo: (Int, String?) -> Void = { _, _ in }
         var documentTitle = ""
         var textSize: CGFloat = ChatTextSize.medium.points
+        var fontFamily: String = ChatFont.system.cssFamily
 
         private weak var webView: WKWebView?
         private var loadedURL: URL?
@@ -134,6 +139,17 @@ extension TranscriptWebView {
 
         private static func textSizeScript(_ size: CGFloat) -> String {
             "Lectern.setTextSize(\(Int(size.rounded())))"
+        }
+
+        func setFontFamily(_ family: String) {
+            guard family != fontFamily else { return }
+            fontFamily = family
+            guard pageReady, let webView else { return }
+            webView.evaluateJavaScript(Self.fontScript(family))
+        }
+
+        private static func fontScript(_ family: String) -> String {
+            "Lectern.setFont(\(JSONLine.encode([family]).dropFirst().dropLast()))"
         }
 
         func push(_ messages: [ChatMessage]) {
@@ -293,10 +309,11 @@ extension TranscriptWebView {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             pageReady = true
             resetPageState()
-            // Shown once the text size applies, so the page never appears at the default size first.
-            webView.evaluateJavaScript(Self.textSizeScript(textSize)) { [weak webView] _, _ in
-                webView?.isHidden = false
-            }
+            webView.evaluateJavaScript(Self.fontScript(fontFamily))
+            webView.evaluateJavaScript(Self.textSizeScript(textSize))
+            // Not in the scripts' completion: WebKit can suspend a hidden page's process (app in the
+            // background), so that completion may never arrive and the transcript would stay hidden.
+            webView.isHidden = false
             scheduleFlush()
         }
 

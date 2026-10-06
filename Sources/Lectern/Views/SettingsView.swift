@@ -364,6 +364,9 @@ private struct AdvancedSettings: View {
                 Picker("Chat text size", selection: $settings.chatTextSize) {
                     ForEach(ChatTextSize.allCases) { Text($0.title).tag($0) }
                 }
+                Picker("Chat font", selection: $settings.chatFont) {
+                    ForEach(ChatFont.allCases) { Text($0.title).tag($0) }
+                }
             }
             Section("Claude Code CLI") {
                 TextField("Path override", text: $settings.claudePathOverride, prompt: Text("Auto-detect"))

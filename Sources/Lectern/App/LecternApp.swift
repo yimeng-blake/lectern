@@ -184,6 +184,7 @@ private struct ViewerCommands: Commands {
             Divider()
             AppearanceMenu(settings: AppServices.shared.settings)
             ChatTextSizeMenu(settings: AppServices.shared.settings)
+            ChatFontMenu(settings: AppServices.shared.settings)
             Divider()
         }
     }
@@ -223,6 +224,22 @@ private struct ChatTextSizeMenu: View {
         Menu("Chat Text Size") {
             Picker("Chat Text Size", selection: $settings.chatTextSize) {
                 ForEach(ChatTextSize.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        }
+    }
+}
+
+/// View > Chat Font: the transcripts' and message fields' font, in every window.
+@MainActor
+private struct ChatFontMenu: View {
+    @Bindable var settings: SettingsStore
+
+    var body: some View {
+        Menu("Chat Font") {
+            Picker("Chat Font", selection: $settings.chatFont) {
+                ForEach(ChatFont.allCases) { Text($0.title).tag($0) }
             }
             .pickerStyle(.inline)
             .labelsHidden()

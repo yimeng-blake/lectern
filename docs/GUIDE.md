@@ -625,6 +625,14 @@ become smaller.
 Lectern uses this text size for the messages and the message fields in all windows. **Medium** is the usual size. You
 can also change it in Settings > Advanced > **Appearance**.
 
+**Change the font of the messages**
+
+1. Select **View > Chat Font**.
+2. Select **System**, **Serif** or **Rounded**.
+
+Lectern uses this font for the messages and the message fields in all windows. **System** is the usual font. Code and
+math keep a font with equal character widths. You can also change the font in Settings > Advanced > **Appearance**.
+
 **Rename a conversation**
 
 1. Double-click the title.
@@ -892,6 +900,7 @@ conversation.
 | Models | **Protect purchased credits** | Asks you before a ChatGPT message can use purchased credits. | On |
 | Advanced (Appearance) | **System**, **Light**, **Dark** | Selects the appearance of all Lectern windows. **System** uses the appearance of macOS. | System |
 | Advanced (Appearance) | **Dark Pages** | Shows the pages with inverted colors. The PDF file does not change. | Off |
+| Advanced (Appearance) | **Chat font** | Sets the font of the messages and the message fields: **System**, **Serif** or **Rounded**. **View > Chat Font** has the same items. | System |
 | Advanced (Appearance) | **Chat text size** | Sets the text size of the messages and the message fields: **Small**, **Medium**, **Large** or **Extra Large**. **View > Chat Text Size** has the same items. | Medium |
 | Advanced (Claude Code CLI, Codex) | **Path override** | Sets the path of the CLI. If it is empty, Lectern finds the CLI automatically (**Auto-detect**). | Empty |
 | Advanced (Claude Code CLI, Codex) | **Detected** | Shows the CLI that Lectern found. **Reveal in Finder** shows it in Finder. | — |

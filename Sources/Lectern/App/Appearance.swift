@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import CoreImage
 
 /// App-wide look, chosen in the toolbar's Appearance menu, View > Appearance, or Settings.
@@ -21,6 +22,42 @@ enum AppAppearance: String, CaseIterable, Identifiable {
         case .system: return nil
         case .light: return NSAppearance(named: .aqua)
         case .dark: return NSAppearance(named: .darkAqua)
+        }
+    }
+}
+
+/// Font of the chat transcripts and message fields: View > Chat Font or Settings. Code and math stay monospaced.
+enum ChatFont: String, CaseIterable, Identifiable {
+    case system, serif, rounded
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: return "System"
+        case .serif: return "Serif"
+        case .rounded: return "Rounded"
+        }
+    }
+
+    /// CSS font-family for the transcript (`--chat-font-family`); Chinese falls back to a matching face.
+    var cssFamily: String {
+        switch self {
+        case .system:
+            return "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"PingFang SC\", system-ui, sans-serif"
+        case .serif:
+            return "ui-serif, \"New York\", \"Songti SC\", Georgia, serif"
+        case .rounded:
+            return "ui-rounded, \"SF Pro Rounded\", -apple-system, \"PingFang SC\", system-ui, sans-serif"
+        }
+    }
+
+    /// Design of the SwiftUI message field.
+    var design: Font.Design {
+        switch self {
+        case .system: return .default
+        case .serif: return .serif
+        case .rounded: return .rounded
         }
     }
 }
