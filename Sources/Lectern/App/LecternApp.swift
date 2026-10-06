@@ -6,6 +6,7 @@ import LecternCore
 /// NSDocument counts edits in its window (typing in the chat registered undo) and autosaves on close,
 /// which rewrote the user's PDF. Lectern never writes to a PDF.
 @main
+@MainActor
 struct LecternApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
@@ -24,6 +25,7 @@ struct LecternApp: App {
 /// Edit > Find, Ask Lectern, Highlight Selection and Add Note…; the viewer's View items; the Go menu.
 /// Viewer commands act on the key reader window's ReaderController and are disabled when no reader
 /// window is key.
+@MainActor
 struct ReaderCommands: Commands {
     let windows: ReaderWindowManager
 
@@ -120,6 +122,7 @@ struct ReaderCommands: Commands {
 }
 
 /// View menu: sidebar, chat, zoom and display mode.
+@MainActor
 private struct ViewerCommands: Commands {
     let reader: ReaderController?
 
@@ -179,6 +182,7 @@ private struct ViewerCommands: Commands {
 }
 
 /// View > Appearance: works with or without a reader window.
+@MainActor
 private struct AppearanceMenu: View {
     @Bindable var settings: SettingsStore
 
@@ -196,6 +200,7 @@ private struct AppearanceMenu: View {
 }
 
 /// Go menu: page navigation and history.
+@MainActor
 private struct GoCommands: Commands {
     let reader: ReaderController?
 

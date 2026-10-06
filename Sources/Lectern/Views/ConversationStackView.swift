@@ -236,6 +236,7 @@ final class ConversationColumnController: NSViewController, NSSplitViewDelegate 
 
 /// One conversation: its title bar, then the chat (header, banner, transcript, input), which a
 /// collapsed panel keeps alive but hidden.
+@MainActor
 struct ConversationPanel: View {
     let model: ChatModel
     let stack: ConversationStack
@@ -256,6 +257,7 @@ struct ConversationPanel: View {
 
 /// Collapse chevron, title (double-click to rename), status, and the conversation menu. The focused
 /// conversation's bar is tinted when there are several.
+@MainActor
 private struct ConversationTitleBar: View {
     let model: ChatModel
     let stack: ConversationStack
@@ -380,6 +382,7 @@ private struct ConversationTitleBar: View {
 }
 
 /// "+ New Conversation" under the stack.
+@MainActor
 private struct NewConversationBar: View {
     let stack: ConversationStack
 

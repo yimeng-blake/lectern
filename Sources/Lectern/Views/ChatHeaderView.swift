@@ -3,6 +3,7 @@ import SwiftUI
 
 /// Provider / model / effort / tier pickers, account and quota status, and New chat.
 /// Picker changes are written to `model.settings`, whose setter persists them as the new default.
+@MainActor
 struct ChatHeaderView: View {
     @Bindable var model: ChatModel
 
@@ -225,6 +226,7 @@ struct ChatHeaderView: View {
 // MARK: - Chips
 
 /// Account status; opens Settings (Accounts) on click.
+@MainActor
 private struct AccountChip: View {
     let state: AuthState
 
@@ -306,6 +308,7 @@ private struct AccountChip: View {
 }
 
 /// Plan usage, e.g. "Weekly 1%" or "5h 7% · 7d 4%".
+@MainActor
 private struct QuotaChip: View {
     let quota: QuotaSnapshot
 

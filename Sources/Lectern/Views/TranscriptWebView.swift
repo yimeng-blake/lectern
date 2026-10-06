@@ -6,6 +6,7 @@ import WebKit
 
 /// The chat transcript, rendered by web/chat.html (Markdown, KaTeX, page links). Messages are
 /// pushed with `Lectern.sync(...)`; the page posts back citation clicks, copy and CSV-save requests.
+@MainActor
 struct TranscriptWebView: NSViewRepresentable {
     let messages: [ChatMessage]
     /// Default name for saved tables: "<title> - table.csv".

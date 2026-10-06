@@ -4,6 +4,7 @@ import SwiftUI
 
 /// The one banner above the transcript: install problems, sign-in, the credits guard, warnings —
 /// in that priority order. Logins only ever start from these buttons.
+@MainActor
 struct AuthBannerView: View {
     let model: ChatModel
 
@@ -173,6 +174,7 @@ struct AuthBannerView: View {
     }
 }
 
+@MainActor
 private struct BannerBox<Content: View>: View {
     let tint: Color
     let systemImage: String

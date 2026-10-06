@@ -3,6 +3,7 @@ import PDFKit
 import SwiftUI
 
 /// The reader's left sidebar: page thumbnails, the table of contents, highlights, or search results.
+@MainActor
 struct ReaderSidebar: View {
     let controller: ReaderController
 
@@ -38,6 +39,7 @@ struct ReaderSidebar: View {
 }
 
 /// Thumbnails / Contents (when the PDF has an outline) / Highlights / Search results (while searching).
+@MainActor
 private struct SidebarModePicker: View {
     let controller: ReaderController
 
@@ -78,6 +80,7 @@ private struct SidebarModePicker: View {
 
 /// PDFKit's thumbnail strip, bound to the reader's PDFView: it highlights the current page, follows
 /// it, navigates on click and renders thumbnails lazily.
+@MainActor
 private struct ThumbnailSidebar: NSViewRepresentable {
     let controller: ReaderController
     let isActive: Bool
@@ -124,6 +127,7 @@ final class ThumbnailContainer: NSView {
 
 // MARK: Table of contents
 
+@MainActor
 private struct OutlineSidebar: View {
     let controller: ReaderController
 
@@ -149,6 +153,7 @@ private struct OutlineSidebar: View {
     }
 }
 
+@MainActor
 private struct OutlineRow: View {
     let node: OutlineNode
     let pageLabel: String?
@@ -183,6 +188,7 @@ private struct OutlineRow: View {
 // MARK: Highlights
 
 /// The document's highlights in page order; click → go to it. Row menu: note, color, delete.
+@MainActor
 private struct HighlightsSidebar: View {
     let controller: ReaderController
 
@@ -217,6 +223,7 @@ private struct HighlightsSidebar: View {
     }
 }
 
+@MainActor
 private struct HighlightRow: View {
     let highlight: Highlight
     let pageLabel: String
@@ -255,6 +262,7 @@ private struct HighlightRow: View {
 
 // MARK: Search results
 
+@MainActor
 private struct SearchResultsSidebar: View {
     let controller: ReaderController
 
@@ -316,6 +324,7 @@ private struct SearchResultsSidebar: View {
 /// 100 ms), which is quadratic and froze the window on searches with thousands of hits. The table
 /// appends rows, builds cells (and their snippets) only for visible rows, and keeps the current match
 /// selected and in view. Clicking a row (or arrowing through the list) goes to that match.
+@MainActor
 private struct SearchResultsTable: NSViewRepresentable {
     let controller: ReaderController
     let searchID: Int
@@ -469,6 +478,7 @@ private final class SearchResultCell: NSTableCellView {
 // MARK: Material
 
 /// The translucent sidebar background used by Finder, Preview and Mail.
+@MainActor
 private struct SidebarMaterial: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()

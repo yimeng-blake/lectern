@@ -6,6 +6,7 @@ import SwiftUI
 /// Root of a reader window (hosted by ReaderWindowController, which owns the window and its title).
 /// The document and its ConversationStack are created once, on first appearance, because SwiftUI may
 /// re-run a view's init many times. The window shuts the conversations down when it closes.
+@MainActor
 struct DocumentWindow: View {
     /// The file's bytes, read once (read-only) by ReaderWindowManager.
     let data: Data
@@ -111,6 +112,7 @@ struct DocumentWindow: View {
 }
 
 /// Sidebar | PDF | conversations. The toolbar is the window's own (ReaderToolbar).
+@MainActor
 private struct DocumentSplitView: View {
     let stack: ConversationStack
     let reader: ReaderController
@@ -123,6 +125,7 @@ private struct DocumentSplitView: View {
     }
 }
 
+@MainActor
 private struct ReaderSplitView: NSViewControllerRepresentable {
     let stack: ConversationStack
     let reader: ReaderController
@@ -135,6 +138,7 @@ private struct ReaderSplitView: NSViewControllerRepresentable {
 }
 
 /// The PDF pane's SwiftUI side: PDFReaderView with the conversations' shared bindings.
+@MainActor
 private struct PDFPane: View {
     @Bindable var stack: ConversationStack
     let reader: ReaderController

@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import LecternCore
 
+@MainActor
 struct SettingsView: View {
     var body: some View {
         TabView {
@@ -18,6 +19,7 @@ struct SettingsView: View {
 
 // MARK: - Accounts
 
+@MainActor
 private struct AccountsSettings: View {
     private var app: AppServices { .shared }
 
@@ -34,6 +36,7 @@ private struct AccountsSettings: View {
     }
 }
 
+@MainActor
 private struct ClaudeAccountSection: View {
     let service: ClaudeService
 
@@ -89,6 +92,7 @@ private struct ClaudeAccountSection: View {
     }
 }
 
+@MainActor
 private struct CodexAccountSection: View {
     let service: CodexService
     let homeMode: CodexHomeMode
@@ -124,6 +128,7 @@ private struct CodexAccountSection: View {
     }
 }
 
+@MainActor
 private struct AuthStatusRows: View {
     let state: AuthState
     let email: String?
@@ -179,6 +184,7 @@ private struct AuthStatusRows: View {
     }
 }
 
+@MainActor
 private struct LoginProgressRow: View {
     let state: AuthState
     let cancel: () -> Void
@@ -209,6 +215,7 @@ private struct LoginProgressRow: View {
     }
 }
 
+@MainActor
 private struct BinaryRow: View {
     let path: String?
     let version: String?
@@ -223,6 +230,7 @@ private struct BinaryRow: View {
     }
 }
 
+@MainActor
 private struct QuotaRows: View {
     let quota: QuotaSnapshot?
 
@@ -253,6 +261,7 @@ private struct QuotaRows: View {
 
 // MARK: - Models
 
+@MainActor
 private struct ModelsSettings: View {
     @Bindable var settings: SettingsStore
     private var app: AppServices { .shared }
@@ -276,6 +285,7 @@ private struct ModelsSettings: View {
     }
 }
 
+@MainActor
 private struct ModelDefaultsRows: View {
     let provider: Provider
     let service: ProviderService
@@ -338,6 +348,7 @@ private enum EffortLabel {
 
 // MARK: - Advanced
 
+@MainActor
 private struct AdvancedSettings: View {
     @Bindable var settings: SettingsStore
     private var app: AppServices { .shared }
@@ -385,6 +396,7 @@ private struct AdvancedSettings: View {
     }
 }
 
+@MainActor
 private struct DetectedPathRow: View {
     let path: String?
 

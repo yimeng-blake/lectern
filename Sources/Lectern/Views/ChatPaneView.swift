@@ -5,6 +5,7 @@ import SwiftUI
 /// One conversation's chat (a panel of the window's ConversationStack, under its title bar). Each part
 /// is its own view so that streaming updates (which only touch `model.messages`) re-render only the
 /// transcript.
+@MainActor
 struct ChatPaneView: View {
     @Bindable var model: ChatModel
 
@@ -21,6 +22,7 @@ struct ChatPaneView: View {
     }
 }
 
+@MainActor
 private struct TranscriptSection: View {
     let model: ChatModel
 
@@ -33,6 +35,7 @@ private struct TranscriptSection: View {
     }
 }
 
+@MainActor
 private struct ChatInputArea: View {
     @Bindable var model: ChatModel
     @FocusState private var editorFocused: Bool

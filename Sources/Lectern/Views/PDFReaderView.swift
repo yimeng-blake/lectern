@@ -8,6 +8,7 @@ import SwiftUI
 /// through `readingState` and, when `passageRequest` is set (a citation link in the chat), has the
 /// controller show that page and flash the cited passage, clearing the request afterwards. Those jumps
 /// are recorded in the controller's Back history.
+@MainActor
 struct PDFReaderView: NSViewRepresentable {
     let document: ReaderDocument
     let controller: ReaderController
