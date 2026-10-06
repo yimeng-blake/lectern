@@ -44,17 +44,20 @@ private struct TranscriptSection: View {
     }
 }
 
-/// Message field and Send/Stop; below them the image and whole-document toggles, presets and the context
-/// hint. A compact panel puts the toggles and presets in one "+" menu left of the field (with the hint
-/// as its last line), so the input is a single row.
+/// Message field and Send/Stop; below them the image and whole-document toggles, presets, skills and the
+/// context hint. A compact panel puts the toggles, presets and skills in one "+" menu left of the field
+/// (with the hint as its last line), so the input is a single row. A chosen skill shows as a chip above
+/// the field until the next send.
 @MainActor
 private struct ChatInputArea: View {
     @Bindable var model: ChatModel
     let compact: Bool
     @FocusState private var editorFocused: Bool
+    @State private var showSkills = false
 
+    /// A skill turn may go without text (it then asks to run the skill).
     private var canSend: Bool {
-        !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.armedSkill != nil
     }
 
     private var presetsEnabled: Bool {
@@ -63,6 +66,9 @@ private struct ChatInputArea: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let skill = model.armedSkill {
+                SkillChip(skill: skill) { model.armedSkill = nil }
+            }
             // The field keeps its place in the view tree in both forms, so it keeps the keyboard focus.
             HStack(alignment: .bottom, spacing: compact ? 6 : 8) {
                 if compact { optionsMenu }
@@ -84,6 +90,7 @@ private struct ChatInputArea: View {
                     .accessibilityLabel("Whole document")
 
                     presetsMenu
+                    skillsButton
 
                     Text(contextHint)
                         .font(.callout)
@@ -112,6 +119,8 @@ private struct ChatInputArea: View {
         .onChange(of: model.isCollapsed) { _, collapsed in
             if collapsed { editorFocused = false }
         }
+        // Each provider has its own skills.
+        .task(id: model.provider) { model.reloadSkills() }
     }
 
     // MARK: Editor
@@ -140,7 +149,7 @@ private struct ChatInputArea: View {
             }
             .overlay(alignment: .topLeading) {
                 if model.draft.isEmpty {
-                    Text("Ask about this document…")
+                    Text(model.armedSkill == nil ? "Ask about this document…" : "Add instructions for the skill (optional)…")
                         .font(editorFont)
                         .lineLimit(1)
                         .foregroundStyle(.tertiary)
@@ -240,7 +249,25 @@ private struct ChatInputArea: View {
         }
     }
 
-    /// Compact panels: the two toggles (checkmarks), the presets and the context hint. Tinted while a
+    // MARK: Skills
+
+    private var skillsButton: some View {
+        Button {
+            showSkills.toggle()
+        } label: {
+            Image(systemName: "sparkles")
+                .foregroundStyle(model.armedSkill == nil ? AnyShapeStyle(.primary) : AnyShapeStyle(SkillChip.accent))
+        }
+        .fixedSize()
+        .disabled(model.installIssue != nil)
+        .help("Skills — run one of your \(model.provider.displayName) skills with the next message (tools and network on; files go to ~/Documents/Lectern Output)")
+        .accessibilityLabel("Skills")
+        .popover(isPresented: $showSkills, arrowEdge: .top) {
+            SkillPicker(model: model) { showSkills = false }
+        }
+    }
+
+    /// Compact panels: the two toggles (checkmarks), the presets, skills and the context hint. Tinted while a
     /// toggle is on.
     private var optionsMenu: some View {
         Menu {
@@ -249,6 +276,8 @@ private struct ChatInputArea: View {
             Divider()
             Menu("Presets") { presetItems }
                 .disabled(!presetsEnabled)
+            Button("Skills…") { showSkills = true }
+                .disabled(model.installIssue != nil)
             Divider()
             Text(contextHint)
         } label: {
@@ -261,8 +290,11 @@ private struct ChatInputArea: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .padding(.bottom, 7)
-        .help("Page image, whole document and presets — \(contextHint)")
-        .accessibilityLabel("Context and presets")
+        .help("Page image, whole document, presets and skills — \(contextHint)")
+        .accessibilityLabel("Context, presets and skills")
+        .popover(isPresented: $showSkills, arrowEdge: .top) {
+            SkillPicker(model: model) { showSkills = false }
+        }
     }
 
     // MARK: Context hint
@@ -283,5 +315,181 @@ private struct ChatInputArea: View {
             parts.append("page image")
         }
         return "Context: " + parts.joined(separator: " · ")
+    }
+}
+
+// MARK: - Skill mode
+
+/// "Skill: <name> · writes to Lectern Output · network on" above the message field; × removes it.
+@MainActor
+private struct SkillChip: View {
+    /// Orange, darker in light mode so the text stays readable (chat.css `--skill`).
+    static let accent = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(srgbRed: 0.96, green: 0.63, blue: 0.29, alpha: 1)
+            : NSColor(srgbRed: 0.71, green: 0.33, blue: 0.04, alpha: 1)
+    })
+
+    let skill: SkillInfo
+    let remove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "sparkles")
+            Text("Skill: \(skill.name) · writes to Lectern Output · network on")
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button(action: remove) {
+                Image(systemName: "xmark.circle.fill")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(Self.accent.opacity(0.8))
+            .help("Remove the skill: the next message is a normal question")
+            .accessibilityLabel("Remove skill")
+        }
+        .font(.callout)
+        .foregroundStyle(Self.accent)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Self.accent.opacity(0.12)))
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Self.accent.opacity(0.35)))
+        .help("""
+            The next message runs the skill \(skill.name) with file tools and network access. It can write only \
+            in ~/Documents/Lectern Output/<document>, never to the PDF. With network access, a PDF with hidden \
+            instructions could make the skill send data out: use skills only with PDFs you trust.
+            """)
+    }
+}
+
+/// The provider's skills by source (name and description), with a search field for long lists. Picking one
+/// arms it for the next send.
+@MainActor
+private struct SkillPicker: View {
+    @Bindable var model: ChatModel
+    let dismiss: () -> Void
+    @State private var query = ""
+
+    /// Lists longer than this get a search field.
+    static let searchThreshold = 15
+
+    private var groups: [(source: String, skills: [SkillInfo])] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        let shown = q.isEmpty ? model.skills : model.skills.filter {
+            $0.name.localizedCaseInsensitiveContains(q) || $0.description.localizedCaseInsensitiveContains(q)
+        }
+        var order: [String] = []
+        var bySource: [String: [SkillInfo]] = [:]
+        for skill in shown {
+            if bySource[skill.source] == nil { order.append(skill.source) }
+            bySource[skill.source, default: []].append(skill)
+        }
+        return order.map { source in
+            (source, bySource[source, default: []].sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending })
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text("\(model.provider.displayName) Skills")
+                    .font(.headline)
+                Spacer(minLength: 4)
+                if model.isLoadingSkills { ProgressView().controlSize(.small) }
+                Button {
+                    model.reloadSkills()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .help("Read the skill list again")
+                .accessibilityLabel("Reload skills")
+            }
+            if model.skills.count > Self.searchThreshold {
+                TextField("Search skills", text: $query)
+                    .textFieldStyle(.roundedBorder)
+            }
+            if model.skills.isEmpty {
+                Text(model.isLoadingSkills ? "Loading skills…" : emptyText)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 1, pinnedViews: [.sectionHeaders]) {
+                        ForEach(groups, id: \.source) { group in
+                            Section {
+                                ForEach(group.skills) { skill in
+                                    SkillRow(skill: skill, isArmed: model.armedSkill == skill) {
+                                        model.armedSkill = skill
+                                        dismiss()
+                                    }
+                                }
+                            } header: {
+                                Text(group.source)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.vertical, 3)
+                                    .background(.background)
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: 380)
+            }
+            Divider()
+            Label("The skill runs with the next message, with file tools and network access. Files go to ~/Documents/Lectern Output.",
+                  systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(SkillChip.accent)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(width: 340)
+        .task { model.reloadSkills() }
+    }
+
+    private var emptyText: String {
+        switch model.provider {
+        case .claude:
+            return "No skills found. Lectern looks in ~/.claude/skills, in your Claude Code plugins and in the Claude app's skills."
+        case .codex:
+            return "No skills found. Lectern shows the skills that Codex reports, including ~/.codex/skills."
+        }
+    }
+}
+
+@MainActor
+private struct SkillRow: View {
+    let skill: SkillInfo
+    let isArmed: Bool
+    let pick: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: pick) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(skill.name)
+                    if !skill.description.isEmpty {
+                        Text(skill.description)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+                Spacer(minLength: 0)
+                if isArmed { Image(systemName: "checkmark").foregroundStyle(SkillChip.accent) }
+            }
+            .padding(.vertical, 4)
+            .padding(.horizontal, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .background(RoundedRectangle(cornerRadius: 6).fill(hovering ? Color.accentColor.opacity(0.14) : .clear))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(skill.description.isEmpty ? skill.path : skill.description)
     }
 }

@@ -68,10 +68,13 @@ public struct TurnRequest: Sendable {
     public var text: String
     /// Rendered page images (PNG files on disk) to attach.
     public var imagePNGs: [URL]
+    /// Set only for a skill-mode turn (see SkillTurn); nil keeps the turn tool-free.
+    public var skill: SkillTurn?
 
-    public init(text: String, imagePNGs: [URL] = []) {
+    public init(text: String, imagePNGs: [URL] = [], skill: SkillTurn? = nil) {
         self.text = text
         self.imagePNGs = imagePNGs
+        self.skill = skill
     }
 }
 
@@ -256,4 +259,10 @@ public protocol ProviderService: AnyObject {
     func addAuthObserver(_ handler: @escaping @MainActor (AuthState) -> Void)
     /// New session for a document. `conversationId` resumes a previous conversation when possible.
     func makeSession(conversationId: String?) -> ChatSession
+    /// Skills this provider's harness can run on this Mac (empty if none or unsupported).
+    func listSkills() async -> [SkillInfo]
+}
+
+public extension ProviderService {
+    func listSkills() async -> [SkillInfo] { [] }
 }

@@ -21,11 +21,16 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     /// Assistant messages: the answer's [p. N] citations checked against the cited pages, in order.
     /// Optional, so sessions saved before it existed still decode.
     var citationChecks: [CitationCheck]?
+    /// Skill mode: the skill's name on the question and on its answer; nil for every other turn.
+    var skill: String?
+    /// Skill answers: absolute paths of the files the turn created or changed in its output folder.
+    var outputFiles: [String]?
 }
 
 extension ChatMessage {
-    init(role: Role, provider: Provider, text: String, status: Status = .done, model: String? = nil) {
+    init(role: Role, provider: Provider, text: String, status: Status = .done, model: String? = nil,
+         skill: String? = nil) {
         self.init(id: UUID(), role: role, provider: provider, model: model, text: text, status: status,
-                  errorText: nil, pages: [], createdAt: Date(), citationChecks: nil)
+                  errorText: nil, pages: [], createdAt: Date(), citationChecks: nil, skill: skill, outputFiles: nil)
     }
 }

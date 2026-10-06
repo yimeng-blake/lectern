@@ -21,6 +21,12 @@ func codexProbeCommands() -> [ProbeCommand] {
         ProbeCommand(name: "codex-ask",
                      help: "Ask a question [--home] [--model M] [--effort E] [--fast] [--image PNG] [--followup Q] [--interrupt-after-ms N] [--resume-id ID] \"question\"",
                      run: codexAsk),
+        ProbeCommand(name: "codex-skills",
+                     help: "Skills the Codex harness lists (skills/list; isolated: + ~/.codex/skills roots) [--home] [--codex-path P]",
+                     run: codexSkills),
+        ProbeCommand(name: "codex-skill-run",
+                     help: "Run one skill turn --skill NAME --pdf P --question Q [--home] [--model M] [--effort E] [--out DIR] [--followup Q ({out} = output folder)] [--resume-id ID]",
+                     run: codexSkillRun),
     ]
 }
 
@@ -244,5 +250,85 @@ private func askTurn(_ session: ChatSession, _ request: TurnRequest, _ settings:
         return false
     default:
         return false
+    }
+}
+
+// MARK: Skills
+
+@MainActor
+private func codexSkills(_ args: [String]) async -> Int32 {
+    guard let service = makeCodexService(args) else { return 2 }
+    let skills = await service.listSkills()
+    for s in skills {
+        print("\(s.name.padding(toLength: 30, withPad: " ", startingAt: 0)) [\(s.source)] \(s.path)")
+        print("    \(s.description.prefix(120))")
+    }
+    print("\(skills.count) skills")
+    service.stop()
+    return skills.isEmpty ? 1 : 0
+}
+
+/// One skill turn on a new (or resumed) thread, like the app's: the document's text is written into the
+/// output folder first. Lists the folder's files afterwards; `--followup` then sends a reader turn.
+@MainActor
+private func codexSkillRun(_ args: [String]) async -> Int32 {
+    guard let name = option("skill", in: args), let pdfPath = option("pdf", in: args),
+          let question = option("question", in: args) else {
+        print("usage: codex-skill-run --skill NAME --pdf P --question Q [--home isolated|shared] [--model M] [--effort E] [--out DIR] [--followup Q] [--resume-id ID]")
+        return 2
+    }
+    let pdf = URL(fileURLWithPath: (pdfPath as NSString).expandingTildeInPath)
+    guard let data = try? Data(contentsOf: pdf, options: .mappedIfSafe),
+          let document = ReaderDocument(data: data, fileURL: pdf, title: pdf.deletingPathExtension().lastPathComponent) else {
+        print("can't open \(pdf.path) as a PDF")
+        return 2
+    }
+    guard let service = makeCodexService(args) else { return 2 }
+    await service.refresh()
+    print("auth: \(describe(service.authState))")
+    let skills = await service.listSkills()
+    guard let skill = skills.first(where: { $0.name == name })
+            ?? skills.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) else {
+        print("no skill named \(name) (\(skills.count) listed; see codex-skills)")
+        service.stop()
+        return 2
+    }
+    print("skill: \(skill.name) [\(skill.source)] \(skill.path)")
+
+    let out = option("out", in: args).map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true) }
+        ?? FileManager.default.temporaryDirectory
+            .appendingPathComponent("lectern-skill-run-\(UUID().uuidString.prefix(8))", isDirectory: true)
+            .appendingPathComponent(document.title, isDirectory: true)
+    try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+    var text = ""
+    for page in 0..<document.pageCount { text += "=== Page \(page + 1) ===\n\(await document.pageText(page))\n\n" }
+    let textFile = out.appendingPathComponent("\(document.title) - text.txt")
+    try? text.write(to: textFile, atomically: true, encoding: .utf8)
+    print("output folder: \(out.path)")
+
+    let settings = TurnSettings(model: option("model", in: args) ?? "", effort: option("effort", in: args) ?? "")
+    print("settings: model \(settings.model.isEmpty ? "(default)" : settings.model) · effort \(settings.effort.isEmpty ? "(default)" : settings.effort) · standard tier")
+    let session = service.makeSession(conversationId: option("resume-id", in: args))
+    let request = TurnRequest(text: question, skill: SkillTurn(skill: skill, outputFolder: out, documentTextFile: textFile, pdfFile: pdf))
+    var status: Int32 = await askTurn(session, request, settings, interruptAfterMs: nil) ? 0 : 1
+    printFiles(in: out)
+    if let followup = option("followup", in: args)?.replacingOccurrences(of: "{out}", with: out.path) {
+        print("\n>>> reader follow-up: \(followup)")
+        if !(await askTurn(session, TurnRequest(text: followup), settings, interruptAfterMs: nil)) { status = 1 }
+        printFiles(in: out)
+    }
+    print("thread: \(session.conversationId ?? "-")")
+    session.shutdown()
+    service.stop()
+    return status
+}
+
+private func printFiles(in folder: URL) {
+    let fm = FileManager.default
+    let files = (fm.enumerator(atPath: folder.path)?.allObjects as? [String] ?? []).sorted()
+    print("files in output folder:")
+    for file in files {
+        let size = (try? fm.attributesOfItem(atPath: folder.appendingPathComponent(file).path)[.size] as? Int) ?? nil
+        print("  \(file)\(size.map { " (\($0) bytes)" } ?? "")")
     }
 }

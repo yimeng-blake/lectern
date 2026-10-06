@@ -19,6 +19,11 @@ final class CodexSession: ChatSession {
     private var turn: Turn?
     /// Turns we already reported, so their late notifications are dropped.
     private var finishedTurnIds: Set<String> = []
+    /// The thread may still carry a skill turn's cwd/sandbox overrides (they persist): after a skill turn
+    /// and after thread/resume, the next reader turn sends the reader settings explicitly.
+    private var restoreReaderMode = false
+    /// A skill-mode developer note went into the thread; the next reader turn adds the note that ends it.
+    private var skillNotePending = false
 
     private final class Turn {
         var threadId: String?
@@ -81,6 +86,10 @@ final class CodexSession: ChatSession {
             finish(t, .failed(error))
             return
         }
+        if let skill = request.skill, let problem = CodexSkillMode.problem(skill) {
+            finish(t, .failed(.api(problem)))
+            return
+        }
         let config = await service.turnConfig(for: settings)
         guard isCurrent(t) else { return }
         guard let config else {
@@ -90,6 +99,24 @@ final class CodexSession: ChatSession {
         do {
             guard let threadId = try await ensureThread(config, for: t), isCurrent(t) else { return }
             t.threadId = threadId
+            if request.skill != nil {
+                try? await service.prepareSkillRoots()
+                let servers = await service.mcpServersWithTools(threadId: threadId)
+                guard isCurrent(t) else { return }
+                if !servers.isEmpty {
+                    finish(t, .failed(.api("This conversation still has Codex tools from MCP servers or apps (\(servers.joined(separator: ", "))), so Lectern won't run a skill in it. Start a new chat and try again.")))
+                    return
+                }
+            }
+            // The thread's developer instructions forbid tools; a developer note (thread history, not the
+            // user's message) lifts that for the skill turn, and another one restores it afterwards.
+            if let skill = request.skill {
+                skillNotePending = true
+                await injectDeveloperNote(CodexSkillMode.startNote(skill), threadId: threadId)
+            } else if skillNotePending, await injectDeveloperNote(CodexSkillMode.endNote, threadId: threadId) {
+                skillNotePending = false
+            }
+            guard isCurrent(t) else { return }
             if t.interruptRequested {
                 finish(t, .interrupted)
                 return
@@ -97,15 +124,28 @@ final class CodexSession: ChatSession {
             if let warning = service.billingWarning { emit(.warning(warning)) }
             emit(.sessionReady(model: config.model))
 
-            var input: [JSONObject] = [["type": "text", "text": request.text, "text_elements": [Any]()]]
+            var input: [JSONObject] = []
+            var text = request.text
+            if let skill = request.skill {
+                input.append(CodexSkillMode.input(skill.skill))
+                text = CodexSkillMode.preamble(skill) + "\n\n" + text
+            }
+            input.append(["type": "text", "text": text, "text_elements": [Any]()])
             for image in request.imagePNGs {
                 input.append(["type": "localImage", "path": image.path, "detail": "high"])
             }
-            let params: JSONObject = ["threadId": threadId, "input": input, "serviceTier": config.serviceTier,
+            var params: JSONObject = ["threadId": threadId, "input": input, "serviceTier": config.serviceTier,
                                       "model": config.model, "effort": config.effort]
+            if let skill = request.skill {
+                params.merge(CodexSkillMode.overrides(skill)) { $1 }
+                restoreReaderMode = true
+            } else if restoreReaderMode {
+                params.merge(CodexSkillMode.readerOverrides(cwd: service.workingDirectory())) { $1 }
+            }
 
             t.started = true
             let result = try await server.request("turn/start", params, timeout: 60)
+            if request.skill == nil { restoreReaderMode = false }
             // Notifications for this turn may already have been handled (even turn/completed).
             if t.turnId == nil, let id = result.obj("turn")?.str("id") { t.turnId = id }
             if t.interruptRequested { sendInterrupt(t, watchdog: isCurrent(t)) }
@@ -122,7 +162,8 @@ final class CodexSession: ChatSession {
     private func ensureThread(_ config: CodexService.TurnConfig, for t: Turn) async throws -> String? {
         if let threadId = conversationId {
             if loadedGeneration == server.generation, server.isRunning { return threadId }
-            var params = threadParams(config)
+            var params = await threadParams(config)
+            guard isCurrent(t) else { return nil }
             params["threadId"] = threadId
             params["excludeTurns"] = true
             subscribe(threadId)
@@ -135,6 +176,8 @@ final class CodexSession: ChatSession {
                     return nil
                 }
                 loadedGeneration = server.generation
+                // Its last turn may have been a skill turn (overrides persist in the rollout).
+                restoreReaderMode = true
                 return threadId
             } catch CodexAppServer.Failure.rpc {
                 unsubscribe()
@@ -147,7 +190,8 @@ final class CodexSession: ChatSession {
                 return nil
             }
         }
-        var params = threadParams(config)
+        var params = await threadParams(config)
+        guard isCurrent(t) else { return nil }
         params["ephemeral"] = false
         let result = try await server.request("thread/start", params, timeout: 60)
         guard let threadId = result.obj("thread")?.str("id") else {
@@ -160,18 +204,32 @@ final class CodexSession: ChatSession {
         }
         conversationId = threadId
         loadedGeneration = server.generation
+        restoreReaderMode = false
+        skillNotePending = false
         subscribe(threadId)
         return threadId
     }
 
-    private func threadParams(_ config: CodexService.TurnConfig) -> JSONObject {
-        [
+    /// thread/inject_items: one developer message appended to the thread's model-visible history.
+    @discardableResult
+    private func injectDeveloperNote(_ text: String, threadId: String) async -> Bool {
+        let item: JSONObject = ["type": "message", "role": "developer",
+                                "content": [["type": "input_text", "text": text] as JSONObject]]
+        return (try? await server.request("thread/inject_items", ["threadId": threadId, "items": [item]])) != nil
+    }
+
+    /// Reader settings for thread/start and thread/resume; `config` keeps apps, plugins, hooks and MCP
+    /// servers off the thread (CodexService.threadConfig).
+    private func threadParams(_ config: CodexService.TurnConfig) async -> JSONObject {
+        let threadConfig = await service.threadConfig()
+        return [
             "model": config.model,
             "serviceTier": config.serviceTier,
             "cwd": service.workingDirectory().path,
             "sandbox": "read-only",
             "approvalPolicy": "never",
             "developerInstructions": ReaderPrompt.system,
+            "config": threadConfig,
         ]
     }
 
@@ -261,6 +319,13 @@ final class CodexSession: ChatSession {
                 if !t.streamed.isEmpty {
                     t.streamed += "\n\n"
                     emit(.textDelta("\n\n"))
+                }
+            case "commandExecution", "fileChange", "webSearch", "imageGeneration", "mcpToolCall",
+                 "dynamicToolCall", "collabAgentToolCall":
+                // Skill turns work with tools for a while before any text: show that something happens.
+                if !t.sentThinking, t.streamed.isEmpty {
+                    t.sentThinking = true
+                    emit(.thinking)
                 }
             default:
                 break

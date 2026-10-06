@@ -29,6 +29,9 @@ public struct ClaudeEventInterpreter: Sendable {
     public private(set) var authFailureDetail: String?
 
     private var announcedThinking = false
+    private var separateNextText = false
+    /// Model calls in this turn (`message_start`): more than one means tool use (a skill turn).
+    private var modelCalls = 0
     /// A `system/api_retry` hit a 401. The CLI recovers from some (token refresh), so it only counts
     /// when the final result names no other status.
     private var retryAuthSignal = false
@@ -83,11 +86,20 @@ public struct ClaudeEventInterpreter: Sendable {
 
     private mutating func streamEvent(_ e: JSONObject) -> [ClaudeStreamOutput] {
         switch e.str("type") {
+        case "message_start":
+            // A skill turn makes several model calls (tool use); keep their texts apart while streaming.
+            modelCalls += 1
+            if !streamedText.isEmpty { separateNextText = true }
+            return []
         case "content_block_delta":
             let delta = e.obj("delta") ?? [:]
             switch delta.str("type") {
             case "text_delta":
-                guard let t = delta.str("text"), !t.isEmpty else { return [] }
+                guard var t = delta.str("text"), !t.isEmpty else { return [] }
+                if separateNextText {
+                    separateNextText = false
+                    t = "\n\n" + t
+                }
                 streamedText += t
                 return [.event(.textDelta(t))]
             case "thinking_delta":
@@ -134,7 +146,9 @@ public struct ClaudeEventInterpreter: Sendable {
             return .resumeFailed(missing)
         }
         guard isError else {
-            var final = text
+            // `result` is only the last model call's text; a turn with tool use keeps every call's text, as
+            // streamed (an earlier one may say, for example, that the document tried to give instructions).
+            var final = modelCalls > 1 && !assistantTexts.isEmpty ? assistantTexts.joined(separator: "\n\n") : text
             if final.isEmpty { final = assistantTexts.joined(separator: "\n\n") }
             if final.isEmpty { final = streamedText }
             return .turnEnded(.completed(text: final, usage: Self.usage(from: ev)))

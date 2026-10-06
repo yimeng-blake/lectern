@@ -3,7 +3,9 @@ import Observation
 
 /// One Claude conversation about one document, backed by a long-lived `claude -p` stream-json process.
 /// The process is spawned lazily on the first send and respawned with `--resume` when the model, effort,
-/// binary or login changes, after an hour idle, or after it died.
+/// binary or login changes, after an hour idle, or after it died. A skill turn (`TurnRequest.skill`)
+/// respawns with the skill configuration (ClaudeSkills) in the output folder, still `--resume`-ing the same
+/// session, and the next normal turn respawns with the tool-free flags again: one conversation, one memory.
 @MainActor @Observable
 public final class ClaudeSession: ChatSession {
     public let provider: Provider = .claude
@@ -43,12 +45,15 @@ public final class ClaudeSession: ChatSession {
         var model: String
         var effort: String
         var loginGeneration: Int
+        /// Set for a skill turn's process (other flags, working directory and environment).
+        var skill: ClaudeSkills.Launch?
     }
 
     private struct Turn {
         let id: Int
         let settings: TurnSettings
         let message: String
+        let skill: ClaudeSkills.Launch?
         /// One automatic restart per turn (session-id clash).
         var restarted = false
     }
@@ -75,10 +80,26 @@ public final class ClaudeSession: ChatSession {
     public func send(_ request: TurnRequest, settings: TurnSettings) {
         guard turn == nil else { return }
         turnCounter += 1
-        let (line, missingImages) = ClaudeProtocol.userMessageLine(text: request.text, imagePNGs: request.imagePNGs)
-        turn = Turn(id: turnCounter, settings: settings, message: line)
+        var text = request.text
+        var launch: ClaudeSkills.Launch?
+        var setupError: String?
+        if let skill = request.skill {
+            do {
+                let l = try ClaudeSkills.launch(for: skill)
+                launch = l
+                text = ClaudeSkills.prompt(for: skill, launch: l) + "\n\n" + request.text
+            } catch {
+                setupError = "Couldn't prepare the \(skill.skill.name) skill: \(error.localizedDescription)"
+            }
+        }
+        let (line, missingImages) = ClaudeProtocol.userMessageLine(text: text, imagePNGs: request.imagePNGs)
+        turn = Turn(id: turnCounter, settings: settings, message: line, skill: launch)
         isBusy = true
         idleTask?.cancel()
+        if let setupError {
+            finishLater(.failed(.api(setupError)))
+            return
+        }
         if missingImages > 0 {
             emitLater(.warning("Couldn't attach \(missingImages) page image\(missingImages == 1 ? "" : "s")."))
         }
@@ -126,7 +147,7 @@ public final class ClaudeSession: ChatSession {
             return
         }
         let key = SpawnKey(binary: binary.path, model: current.settings.model, effort: current.settings.effort,
-                           loginGeneration: service.loginGeneration)
+                           loginGeneration: service.loginGeneration, skill: current.skill)
         if process != nil, key != spawnKey || Date().timeIntervalSince(lastActivity) > Self.idleLimit {
             retireProcess()
         }
@@ -142,10 +163,19 @@ public final class ClaudeSession: ChatSession {
     }
 
     private func spawn(binary: URL, key: SpawnKey) throws {
-        let args = ClaudeProtocol.sessionArguments(model: key.model, effort: key.effort, sessionId: sessionId,
-                                                   resume: transcriptExists)
-        let p = ManagedProcess(executable: binary, arguments: args, environment: CleanEnvironment.make(),
+        let p: ManagedProcess
+        if let skill = key.skill {
+            let args = ClaudeSkills.arguments(skill, model: key.model, effort: key.effort, sessionId: sessionId,
+                                              resume: transcriptExists)
+            p = ManagedProcess(executable: binary, arguments: args, environment: ClaudeSkills.environment(),
+                               currentDirectory: URL(fileURLWithPath: skill.outputFolder, isDirectory: true),
+                               keepStdinOpen: true)
+        } else {
+            let args = ClaudeProtocol.sessionArguments(model: key.model, effort: key.effort, sessionId: sessionId,
+                                                       resume: transcriptExists)
+            p = ManagedProcess(executable: binary, arguments: args, environment: CleanEnvironment.make(),
                                currentDirectory: AppPaths.claudeCwd, keepStdinOpen: true)
+        }
         processGeneration += 1
         let generation = processGeneration
         p.onStdoutLine = { [weak self] line in self?.received(line, generation: generation) }
@@ -159,6 +189,14 @@ public final class ClaudeSession: ChatSession {
     private func received(_ line: String, generation: Int) {
         guard generation == processGeneration, process != nil else { return }
         traceHandler?(line)
+        if line.contains("\"control_request\""), let obj = JSONLine.parse(line), obj.str("type") == "control_request",
+           let id = obj.str("request_id") {
+            // Claude Code asks the host when nothing pre-approved a call. Only a skill turn's sandbox may
+            // reach the network (the owner's decision); anything else needing a person's approval is refused.
+            write(ClaudeProtocol.controlAnswer(requestId: id, request: obj.obj("request") ?? [:],
+                                               allowNetwork: spawnKey?.skill != nil))
+            return
+        }
         guard let current = turn else {
             // Between turns only usage-limit info matters.
             if let obj = JSONLine.parse(line), obj.str("type") == "rate_limit_event",

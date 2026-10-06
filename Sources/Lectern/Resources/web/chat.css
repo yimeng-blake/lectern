@@ -18,6 +18,8 @@
   --error: #c4291c;
   --error-bg: rgba(196, 41, 28, 0.08);
   --warn: #a35c00;
+  /* Skill turns (tools, network, files in Lectern Output). */
+  --skill: #b4530a;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -34,6 +36,7 @@
     --error: #ff6b5e;
     --error-bg: rgba(255, 107, 94, 0.10);
     --warn: #f0a640;
+    --skill: #f5a04a;
   }
 }
 
@@ -95,7 +98,9 @@ body.is-empty .empty { display: block; }
 .msg:first-child { margin-top: 6px; }
 
 .msg .meta:empty,
-.msg .status:empty { display: none; }
+.msg .status:empty,
+.msg .skill-chip:empty,
+.msg .files:empty { display: none; }
 
 .msg.user {
   display: flex;
@@ -189,6 +194,89 @@ body.is-empty .empty { display: block; }
   font-size: calc(11.5 * var(--px));
   color: var(--warn);
 }
+
+/* Skill turns: the chip over the question, the label in the answer's meta line, the answer's files */
+
+.skill-chip {
+  max-width: 85%;
+  margin-bottom: 4px;
+  padding: 1px calc(8 * var(--px));
+  border: 1px solid color-mix(in srgb, var(--skill) 35%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--skill) 10%, transparent);
+  color: var(--skill);
+  font-size: calc(11 * var(--px));
+  user-select: none;
+  -webkit-user-select: none;
+}
+.skill-tag {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  margin-left: 4px;
+  color: var(--skill);
+  font-weight: 600;
+}
+
+.files {
+  margin-top: 8px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.files ul { list-style: none; margin: 0; padding: 0; }
+.file {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  padding: 3px 4px 3px 6px;
+  border-radius: 6px;
+  font-size: calc(13 * var(--px));
+}
+.file:hover { background: var(--code-bg); }
+.file-icon {
+  flex: none;
+  width: calc(34 * var(--px));
+  border-radius: 4px;
+  background: var(--kind, #8a8a8f);
+  color: #fff;
+  font: 600 calc(9.5 * var(--px))/1.7 ui-monospace, "SF Mono", Menlo, monospace;
+  text-align: center;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.kind-word { --kind: #2b579a; }
+.kind-sheet { --kind: #217346; }
+.kind-slides { --kind: #c43e1c; }
+.kind-pdf { --kind: #d93025; }
+.kind-image { --kind: #8a4fd8; }
+.kind-text { --kind: #5f6b7a; }
+.file-name {
+  flex: 1 1 9em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Next to the name, or on a line of their own (right-aligned) when the panel is narrow. */
+.file-actions { flex: none; margin-left: auto; white-space: nowrap; }
+.file button {
+  font: inherit;
+  font-size: calc(11.5 * var(--px));
+  color: var(--accent);
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  padding: 1px 6px;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.file button:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 
 /* Copy */
 
@@ -369,4 +457,6 @@ a.cite:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
   .body pre { padding: 8px 9px; }
   .body th, .body td { padding: 3px 7px; }
   .table-tools button { font-size: calc(10 * var(--px)); padding: 1px 5px; }
+  .skill-chip { max-width: 92%; }
+  .file button { padding: 1px 4px; }
 }

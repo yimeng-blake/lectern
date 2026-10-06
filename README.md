@@ -18,7 +18,7 @@ have up to 4 conversations, in 1 or 2 columns. Lectern gives each conversation a
 - **No credentials in Lectern.** Lectern never reads, keeps or sends your passwords, tokens or API keys. The CLIs keep
   your sign-ins.
 - **No server.** Lectern has no server, no analytics and no telemetry. It sends your questions and the text of the
-  PDF only to the provider that you use.
+  PDF only to the provider that you use. A [skill message](docs/GUIDE.md#use-a-skill) can also use the internet.
 - **Read-only.** Lectern never changes your PDFs.
 
 This README has a CAUTION notice. Read the CAUTION before you do the step that follows it.
@@ -159,6 +159,7 @@ The [Lectern guide](docs/GUIDE.md) gives more information about these items:
 - [Use the chat pane](docs/GUIDE.md#use-the-chat-pane): models, **Fast**, purchased credits and context
 - [Use more than one conversation](docs/GUIDE.md#use-more-than-one-conversation): add, focus, show alone, rename,
   collapse, move and close conversations, text size and titles
+- [Use a skill](docs/GUIDE.md#use-a-skill): make Word, Excel, PowerPoint and other files from the PDF with your skills
 - [Ask about a selection](docs/GUIDE.md#ask-about-a-selection), [Presets](docs/GUIDE.md#presets),
   [Citation check badges](docs/GUIDE.md#citation-check-badges), [Save a table as CSV](docs/GUIDE.md#save-a-table-as-csv)
   and [Scanned PDFs (OCR) and table pages](docs/GUIDE.md#scanned-pdfs-ocr-and-table-pages)

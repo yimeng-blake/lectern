@@ -56,11 +56,12 @@ final class ChatModel: Identifiable {
     var chatTextSize: ChatTextSize { settingsStore.chatTextSize }
     var chatFont: ChatFont { settingsStore.chatFont }
 
-    /// Switching keeps both conversations.
+    /// Switching keeps both conversations. A chosen skill belongs to the old provider's harness.
     var provider: Provider {
         didSet {
             guard provider != oldValue else { return }
             settingsStore.lastProvider = provider
+            armedSkill = nil
             persist()
         }
     }
@@ -95,6 +96,13 @@ final class ChatModel: Identifiable {
     var creditsGuardReason: CreditsGuardReason? { creditsGuardActive ? blockedReason : nil }
     private(set) var lastWarning: String?
 
+    /// Skill mode: the next send (only that one) runs with this skill, with tools and network, writing to
+    /// the document's folder in ~/Documents/Lectern Output. Presets and Ask Lectern never use it.
+    var armedSkill: SkillInfo?
+    /// The skills `provider`'s harness has on this Mac (`reloadSkills()`; empty until loaded).
+    var skills: [SkillInfo] { skillLists[provider] ?? [] }
+    var isLoadingSkills: Bool { loadingSkills.contains(provider) }
+
     // MARK: Private state
 
     /// A question with the reading position captured when it was asked, so a send delayed by
@@ -106,6 +114,8 @@ final class ChatModel: Identifiable {
         let readingState: ReadingState
         let attachPageImage: Bool
         let wholeDocument: Bool
+        /// Skill mode for this one turn.
+        let skill: SkillInfo?
         var creditsConfirmed = false
         var authFailures = 0
         /// Prompt of an attempt rejected for auth. It is resent as is: the ContextBuilder already
@@ -119,6 +129,8 @@ final class ChatModel: Identifiable {
         let assistantMessageId: UUID
         var sent = false
         var stopRequested = false
+        /// A skill turn's folder, text file and the folder's files before the turn.
+        var skillOutput: SkillOutput.Prepared?
     }
 
     private var activeTurns: [Provider: ActiveTurn] = [:]
@@ -126,6 +138,8 @@ final class ChatModel: Identifiable {
     private var blockedReason = CreditsGuardReason.exhausted
     private var resolvedModels: [Provider: String] = [:]
     private var eventQuotas: [Provider: QuotaSnapshot] = [:]
+    private var skillLists: [Provider: [SkillInfo]] = [:]
+    private var loadingSkills: Set<Provider> = []
 
     @ObservationIgnored private let services: [Provider: ProviderService]
     @ObservationIgnored private let settingsStore: SettingsStore
@@ -149,6 +163,8 @@ final class ChatModel: Identifiable {
     @ObservationIgnored private var codexQuotaCheckedFor: UUID?
     /// How long Stop may wait for the backend to confirm before the session is discarded.
     @ObservationIgnored var interruptTimeout: Duration = .seconds(15)
+    /// Where skill turns write: ~/Documents/Lectern Output (tests use another folder).
+    @ObservationIgnored var skillOutputRoot = SkillOutput.root
 
     /// Made by its ConversationStack, which saves it. `stored` restores a saved conversation.
     /// `secondary`: the same PDF is open in another window. This one shows the saved chat but starts
@@ -196,11 +212,38 @@ final class ChatModel: Identifiable {
 
     // MARK: Actions
 
+    /// Sends `draft`; with an armed skill, as a skill turn (an empty draft then asks to run the skill).
     func send() {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let typed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let skill = armedSkill
+        let text = typed.isEmpty ? skill.map(Self.skillQuestion) ?? "" : typed
         guard !text.isEmpty, !isBusy, !creditsGuardActive else { return }
-        guard submit(question: text, title: text, state: readingState, wholeDocument: includeWholeDocument) else { return }
+        guard submit(question: text, title: text, state: readingState, wholeDocument: includeWholeDocument,
+                     skill: skill) else { return }
         draft = ""
+        armedSkill = nil
+    }
+
+    /// The question of a skill turn sent without text.
+    static func skillQuestion(_ skill: SkillInfo) -> String {
+        "Run the \(skill.name) skill on this document."
+    }
+
+    /// Reads the current provider's skill list again (Skills menu opened, provider changed).
+    func reloadSkills() {
+        let p = provider
+        guard loadingSkills.insert(p).inserted else { return }
+        Task { [weak self] in
+            guard let service = self?.service(p) else { return }
+            let list = await service.listSkills()
+            guard let self else { return }
+            self.loadingSkills.remove(p)
+            self.skillLists[p] = list
+            // A skill that is gone (folder removed, plugin disabled) can't run.
+            if self.provider == p, let armed = self.armedSkill, !list.contains(where: { $0.id == armed.id }) {
+                self.armedSkill = nil
+            }
+        }
     }
 
     /// "Ask Lectern" on a PDF selection (`pages` 1-based). The selection is captured now, so the
@@ -279,8 +322,13 @@ final class ChatModel: Identifiable {
         guard let turn = blockedTurn else { return }
         blockedTurn = nil
         messages.removeAll { $0.id == turn.userMessageId }
+        var question = turn.question
+        if let skill = turn.skill {
+            armedSkill = skill
+            if question == Self.skillQuestion(skill) { question = "" }
+        }
         let typed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        draft = typed.isEmpty ? turn.question : turn.question + "\n\n" + draft
+        draft = typed.isEmpty ? question : question.isEmpty ? draft : question + "\n\n" + draft
         persist()
         pump(turn.provider)
     }
@@ -388,18 +436,19 @@ final class ChatModel: Identifiable {
 
     /// Shows `title` as the user's message and queues `question` with the given reading state.
     @discardableResult
-    private func submit(question: String, title: String, state: ReadingState, wholeDocument: Bool) -> Bool {
+    private func submit(question: String, title: String, state: ReadingState, wholeDocument: Bool,
+                        skill: SkillInfo? = nil) -> Bool {
         let p = provider
         if let issue = service(p).installIssue {
             append(ChatMessage(role: .notice, provider: p, text: issue))
             return false
         }
         isShutDown = false
-        let message = ChatMessage(role: .user, provider: p, text: title)
+        let message = ChatMessage(role: .user, provider: p, text: title, skill: skill?.name)
         append(message)
         queues[p, default: []].append(PendingTurn(
             userMessageId: message.id, provider: p, question: question, readingState: state,
-            attachPageImage: attachPageImage, wholeDocument: wholeDocument))
+            attachPageImage: attachPageImage, wholeDocument: wholeDocument, skill: skill))
         pump(p)
         return true
     }
@@ -462,7 +511,7 @@ final class ChatModel: Identifiable {
         lastWarning = nil
         let requested = turnSettings(for: p).model
         let reply = ChatMessage(role: .assistant, provider: p, text: "", status: .thinking,
-                                model: requested.isEmpty ? nil : requested)
+                                model: requested.isEmpty ? nil : requested, skill: pending.skill?.name)
         // Right after its question, which may not be last when it waited for login or the guard.
         if let i = messages.firstIndex(where: { $0.id == pending.userMessageId }) {
             messages.insert(reply, at: i + 1)
@@ -478,6 +527,22 @@ final class ChatModel: Identifiable {
 
     private func buildAndSend(_ p: Provider, token: UUID) async {
         guard let turn = activeTurns[p], turn.token == token else { return }
+        // A skill turn first gets its folder, a fresh copy of the document's text and the folder's snapshot.
+        var skillOutput: SkillOutput.Prepared?
+        if let skill = turn.pending.skill {
+            do {
+                skillOutput = try await SkillOutput.prepare(skill: skill, document: document, root: skillOutputRoot)
+            } catch {
+                guard let current = activeTurns[p], current.token == token else { return }
+                let message = "Lectern could not prepare the skill's output folder: \(error.localizedDescription)"
+                update(current.assistantMessageId) {
+                    $0.status = current.stopRequested ? .interrupted : .failed
+                    $0.errorText = current.stopRequested ? nil : message
+                }
+                finish(p)
+                return
+            }
+        }
         let built: BuiltPrompt
         let builtNow: Bool
         if let cached = turn.pending.builtPrompt {
@@ -506,8 +571,11 @@ final class ChatModel: Identifiable {
         update(current.pending.userMessageId) { $0.pages = pages }
         current.pending.builtPrompt = built
         current.sent = true
+        current.skillOutput = skillOutput
         activeTurns[p] = current
-        session(for: p).send(built.request, settings: turnSettings(for: p))
+        var request = built.request
+        request.skill = skillOutput?.turn
+        session(for: p).send(request, settings: turnSettings(for: p))
     }
 
     private func handle(_ event: BackendEvent, from p: Provider) {
@@ -545,10 +613,12 @@ final class ChatModel: Identifiable {
             }
             if let id = sessions[p]?.conversationId { conversationIds[p] = id }
             titleAfterFirstAnswer(turn, replyId: replyId)
+            collectSkillOutput(turn)
             finish(p)
             verifyCitations(replyId)
         case .interrupted:
             update(replyId) { $0.status = .interrupted }
+            collectSkillOutput(turn)
             // No answer text: the prompt may never have reached the backend (Stop before turn/start), so
             // send its pages again next time rather than call them "provided earlier".
             if messages.first(where: { $0.id == replyId })?.text.isEmpty != false,
@@ -581,9 +651,22 @@ final class ChatModel: Identifiable {
             $0.status = .failed
             $0.errorText = error.message
         }
+        collectSkillOutput(turn)
         // Unknown whether the prompt reached the conversation; send its pages again next time.
         resetContext(p)
         finish(p)
+    }
+
+    /// After a skill turn ends (any way), the files it created or changed go with its answer.
+    private func collectSkillOutput(_ turn: ActiveTurn) {
+        guard let output = turn.skillOutput else { return }
+        let replyId = turn.assistantMessageId
+        Task { [weak self] in
+            let files = await Task.detached(priority: .utility) { output.changedFiles() }.value
+            guard let self, !files.isEmpty else { return }
+            self.update(replyId) { $0.outputFiles = files }
+            self.persist()
+        }
     }
 
     // MARK: Titles
@@ -667,6 +750,7 @@ final class ChatModel: Identifiable {
     private func interruptTimedOut(_ p: Provider, token: UUID) {
         guard let turn = activeTurns[p], turn.token == token else { return }
         update(turn.assistantMessageId) { $0.status = .interrupted }
+        collectSkillOutput(turn)
         // The session never confirmed the stop; replace it so the next send gets a fresh process.
         if let session = sessions.removeValue(forKey: p) {
             session.onEvent = nil
@@ -805,5 +889,136 @@ final class ChatModel: Identifiable {
             break
         }
         return m
+    }
+}
+
+/// Skill mode's files: the document's folder in ~/Documents/Lectern Output (the skill turn's working
+/// directory, the only place it may write), the document's text written there for the skill, and the files
+/// a turn created or changed.
+enum SkillOutput {
+    /// Path → modification date and size of each regular file in a folder.
+    typealias Snapshot = [String: FileStamp]
+
+    struct FileStamp: Equatable, Sendable {
+        let modified: Date?
+        let size: Int?
+    }
+
+    struct Prepared: Sendable {
+        let turn: SkillTurn
+        let before: Snapshot
+
+        /// New or changed files since `before`, without the document text file, in name order.
+        func changedFiles() -> [String] {
+            let textFile = turn.documentTextFile?.standardizedFileURL.path
+            return SkillOutput.snapshot(turn.outputFolder)
+                .filter { path, stamp in path != textFile && before[path] != stamp }
+                .keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        }
+    }
+
+    /// Most files a snapshot records (a folder with more is not a skill's output).
+    static let snapshotLimit = 5_000
+
+    static var root: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Lectern Output", isDirectory: true)
+    }
+
+    /// The document title as a file name: no path separators or control characters, no leading dot
+    /// (a hidden folder), at most 100 characters.
+    static func fileName(for title: String) -> String {
+        let clean = title.components(separatedBy: CharacterSet(charactersIn: "/:\\").union(.controlCharacters))
+            .joined(separator: "-")
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ".")))
+        let name = String(clean.prefix(100)).trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? "Untitled" : name
+    }
+
+    /// The document's folder in `root`. Never one that holds the PDF itself (a skill may write anywhere
+    /// in its folder): "<title> 2" then.
+    static func folder(title: String, pdf: URL?, root: URL = root) -> URL {
+        let name = fileName(for: title)
+        let pdfPath = pdf.map { canonical($0).path }
+        var n = 1
+        while true {
+            let folder = root.appendingPathComponent(n == 1 ? name : "\(name) \(n)", isDirectory: true)
+            guard let pdfPath, pdfPath.hasPrefix(canonical(folder).path + "/") else { return folder }
+            n += 1
+        }
+    }
+
+    /// Creates the folder, writes the document's text into it (fresh for each skill turn) and records
+    /// the folder's files.
+    static func prepare(skill: SkillInfo, document: ReaderDocument, root: URL = root) async throws -> Prepared {
+        let folder = folder(title: document.title, pdf: document.fileURL, root: root)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let textFile = folder.appendingPathComponent("\(fileName(for: document.title)) - text.md")
+        try Data(await documentText(document).utf8).write(to: textFile, options: .atomic)
+        let turn = SkillTurn(skill: skill, outputFolder: folder, documentTextFile: textFile, pdfFile: document.fileURL)
+        return Prepared(turn: turn, before: snapshot(folder))
+    }
+
+    /// Every page's text (OCR included) with "=== Page N ===" markers, like the prompt's <pages>.
+    static func documentText(_ document: ReaderDocument) async -> String {
+        // Building the search index extracts every page, with OCR in parallel batches.
+        _ = await document.searchPages("page", topK: 1)
+        var out = "# \(document.title)\n"
+        for index in 0..<document.pageCount {
+            let text = await document.pageText(index)
+            let ocr = await document.pageTextSource(index) == .ocr
+            out += "\n=== Page \(index + 1) ===\n" + (ocr ? "(text recognized by OCR)\n" : "") + text + "\n"
+        }
+        return out
+    }
+
+    /// Folders a skill's tools fill with installed packages or caches, not results (a local `npm install`).
+    static let ignoredFolders: Set<String> = ["node_modules", "__pycache__", "site-packages", "venv"]
+
+    /// Regular files in `folder` and its subfolders; hidden items, package contents, symbolic links and
+    /// `ignoredFolders` are left out.
+    static func snapshot(_ folder: URL) -> Snapshot {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .isDirectoryKey, .contentModificationDateKey, .fileSizeKey]
+        guard let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: keys,
+                                                          options: [.skipsHiddenFiles, .skipsPackageDescendants])
+        else { return [:] }
+        var out: Snapshot = [:]
+        for case let url as URL in walker {
+            guard out.count < snapshotLimit else { break }
+            guard let values = try? url.resourceValues(forKeys: Set(keys)) else { continue }
+            if values.isDirectory == true, ignoredFolders.contains(url.lastPathComponent) {
+                walker.skipDescendants()
+                continue
+            }
+            guard values.isRegularFile == true else { continue }
+            out[url.standardizedFileURL.path] = FileStamp(modified: values.contentModificationDate, size: values.fileSize)
+        }
+        return out
+    }
+
+    /// The item at absolute `path` when it exists inside `root` (symbolic links resolved); nil otherwise.
+    static func contained(_ path: String, root: URL = root) -> URL? {
+        guard path.hasPrefix("/") else { return nil }
+        let url = canonical(URL(fileURLWithPath: path))
+        guard url.path.hasPrefix(canonical(root).path + "/"),
+              FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
+    /// Document types "Open" hands to their default app. Anything else (scripts, apps, links to other
+    /// files) is only shown in Finder: a skill that read an untrusted PDF may have written it.
+    static let openableExtensions: Set<String> = [
+        "pdf", "docx", "doc", "xlsx", "xlsm", "xls", "csv", "tsv", "pptx", "ppt", "key", "pages", "numbers",
+        "md", "markdown", "txt", "rtf", "json", "xml", "yaml", "yml", "html", "htm",
+        "png", "jpg", "jpeg", "gif", "tif", "tiff", "heic", "webp", "svg",
+    ]
+
+    static func canOpen(_ url: URL) -> Bool {
+        guard openableExtensions.contains(url.pathExtension.lowercased()) else { return false }
+        return (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
+    }
+
+    private static func canonical(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
     }
 }

@@ -5,7 +5,8 @@ import UniformTypeIdentifiers
 import WebKit
 
 /// The chat transcript, rendered by web/chat.html (Markdown, KaTeX, page links). Messages are
-/// pushed with `Lectern.sync(...)`; the page posts back citation clicks, copy and CSV-save requests.
+/// pushed with `Lectern.sync(...)`; the page posts back citation clicks, copy and CSV-save requests,
+/// and Open / Show in Finder for a skill turn's files.
 @MainActor
 struct TranscriptWebView: NSViewRepresentable {
     let messages: [ChatMessage]
@@ -243,8 +244,23 @@ extension TranscriptWebView {
             case "resync":
                 resetPageState()
                 scheduleFlush()
+            case "openFile", "revealFile":
+                if let path = body["path"] as? String { openOutputFile(path, reveal: type == "revealFile") }
             default:
                 break
+            }
+        }
+
+        /// Only a file listed with a skill answer, inside ~/Documents/Lectern Output; anything else is
+        /// ignored (a beep when the file is gone). Only document, image and text types are opened; others
+        /// (scripts, apps) are shown in Finder.
+        private func openOutputFile(_ path: String, reveal: Bool) {
+            guard latest.contains(where: { $0.outputFiles?.contains(path) == true }) else { return }
+            guard let url = SkillOutput.contained(path) else { return NSSound.beep() }
+            if !reveal, SkillOutput.canOpen(url) {
+                NSWorkspace.shared.open(url)
+            } else {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
             }
         }
 
@@ -341,6 +357,9 @@ extension TranscriptWebView {
         let errorText: String?
         /// Citation badges, by ordinal.
         let checks: [WireCheck]?
+        /// Skill turns: the skill's name, and the answer's output files (absolute paths).
+        let skill: String?
+        let files: [String]?
 
         init(_ message: ChatMessage) {
             id = message.id.uuidString
@@ -351,6 +370,8 @@ extension TranscriptWebView {
             status = message.status.rawValue
             errorText = message.errorText
             checks = message.citationChecks.map { $0.map(WireCheck.init) }
+            skill = message.skill
+            files = message.outputFiles
         }
     }
 

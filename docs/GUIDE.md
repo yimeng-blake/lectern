@@ -35,6 +35,7 @@ This guide has CAUTION notices. Read each CAUTION before you do the step that fo
   - [Use more than one conversation](#use-more-than-one-conversation)
   - [Ask about a selection](#ask-about-a-selection)
   - [Presets](#presets)
+  - [Use a skill](#use-a-skill)
   - [Fast](#fast)
   - [Protect purchased credits](#protect-purchased-credits)
   - [Citations](#citations)
@@ -536,8 +537,9 @@ The chat pane has these controls:
 | Usage | Chat header | Shows the usage windows (for example a 5-hour window and a 7-day window), if the provider reports them. |
 | **Attach page image** (photo button) | Below the message field | Sends an image of the current page. Refer to [Context](#context). |
 | **Whole document** (magnifier button) | Below the message field | Sends all pages, or the most applicable pages. Refer to [Context](#context). |
+| **Skills** (sparkles button) | Below the message field | Selects a skill for the next message. Refer to [Use a skill](#use-a-skill). |
 | Context text | Below the message field | Shows what Lectern sends with the question, for example "Context: around p. 12 · selection". |
-| **+** button (narrow conversations) | Left of the message field | Has **Attach Page Image**, **Whole Document**, **Presets** and the context text. Refer to [Use more than one conversation](#use-more-than-one-conversation). |
+| **+** button (narrow conversations) | Left of the message field | Has **Attach Page Image**, **Whole Document**, **Presets**, **Skills…** and the context text. Refer to [Use more than one conversation](#use-more-than-one-conversation). |
 
 For Claude, Lectern sends the model and the reasoning effort with a message only if they are not **Default**. With
 **Default**, Claude Code uses the settings in its configuration. For ChatGPT, Lectern always sends the model, the
@@ -738,6 +740,47 @@ question only. The **Whole document** button does not change. Refer to [Context]
 **Presets** is gray when an answer is in progress, or when you are not signed in. It is also gray when Lectern waits
 for your decision about purchased credits.
 
+### Use a skill
+
+A skill is a set of instructions and scripts for one task. For example, a skill can make a Word document, a
+spreadsheet or a slide deck from the PDF. Lectern shows the skills of the provider that you selected:
+
+- Claude: the skills in `~/.claude/skills`, the skills of your Claude Code plugins and the skills of the Claude app.
+- ChatGPT: the skills that Codex shows, with the skills in `~/.codex/skills`. Lectern does not show the skills of
+  Codex plugins, because skill messages run without plugins.
+
+A skill message is different from a normal message. The provider can use tools, and it can connect to the internet.
+It puts its files in the output folder of the PDF, `~/Documents/Lectern Output/<PDF name>`. Lectern also puts the
+text of all pages in this folder, in "<PDF name> - text.md". The provider cannot change the PDF.
+
+> [!CAUTION]
+> Use skills only with PDFs that you trust. A PDF can contain hidden instructions for the provider. In a skill
+> message, these instructions can send your data to the internet.
+
+1. In the chat header, select Claude or ChatGPT.
+2. Click the **Skills** button (the sparkles button) below the message field.
+   - In a narrow conversation, click the **+** button. Then select **Skills…**.
+3. If the list has more than 15 skills, type a part of the name in the search field.
+4. Select a skill. Lectern shows it above the message field, for example "Skill: docx · writes to Lectern Output ·
+   network on".
+5. Optional: type instructions for the skill in the message field.
+6. Press Return. Lectern sends one skill message. The next message is a normal message again.
+
+To remove the skill before you send the message, click × on the skill.
+
+When the answer is complete, it shows the new and changed files of the output folder:
+
+- To open a file, click **Open**. Lectern opens only documents, images and text files. For other files (for example
+  scripts), Lectern shows the file in Finder.
+- To show a file in Finder, click **Show in Finder**.
+
+Notes:
+
+- The first time, macOS can ask if Lectern can use the Documents folder. Click **Allow**.
+- A skill message can use much more of your plan than a normal message.
+- A skill can replace a file of the same name in the output folder.
+- Presets and **Ask Lectern** do not use skills.
+
 ### Fast
 
 **Fast** uses the priority tier of ChatGPT. You get answers more quickly, but each message uses approximately 2.5 times
@@ -915,8 +958,11 @@ conversation.
 - Lectern does not send the PDF file. It gets the text from the PDF on your Mac with PDFKit. It sends only the
   applicable pages to the provider that you selected. If a message has a page image, Lectern also sends that image.
 - Lectern does OCR on your Mac with the Vision framework of macOS. It does not send scanned pages to an OCR service.
-- Lectern runs Claude with `--safe-mode` and with no tools. Lectern runs Codex in a read-only sandbox. Lectern gives
-  the answer "no" to all approval requests. Because of this, Codex cannot change files.
+- For a normal message, Lectern runs Claude with `--safe-mode` and with no tools. Lectern runs Codex in a read-only
+  sandbox. Lectern gives the answer "no" to all approval requests. Because of this, Codex cannot change files.
+- For a skill message, the provider can use tools and the internet. It can read the PDF and the text of all pages.
+  It can make and change files only in the output folder of the PDF (`~/Documents/Lectern Output`) and in temporary
+  and cache folders. Refer to [Use a skill](#use-a-skill).
 - Lectern keeps conversations in `~/Library/Application Support/Lectern/sessions`. Lectern makes the name of each file
   from a hash of the contents of the PDF. The same file also keeps the viewer settings of that PDF (last page, zoom,
   layout, sidebar and chat pane).
@@ -1126,6 +1172,8 @@ Optional: to also remove the conversations, the settings and the separate ChatGP
    rm -rf ~/Library/"Application Support"/Lectern
    defaults delete local.lectern.app
    ```
+
+These commands do not remove the files of your skill messages in `~/Documents/Lectern Output`.
 
 Claude Code and Codex are separate programs, with separate sign-ins and history. If you do not use one of these
 programs, you can remove it. The setup guide of each program tells you how to remove it.

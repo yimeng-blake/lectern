@@ -57,6 +57,26 @@ enum ClaudeProtocol {
         JSONLine.encode(["type": "control_request", "request_id": requestId, "request": ["subtype": "interrupt"]])
     }
 
+    /// Reply to a `control_request` from the CLI. `can_use_tool` (a call nothing pre-approved): allow only the
+    /// sandbox's per-host network ask (`SandboxNetworkAccess`, input `{host}`) and only when `allowNetwork`;
+    /// deny everything else. Other request kinds get an error reply so the CLI never waits on Lectern.
+    static func controlAnswer(requestId: String, request: JSONObject, allowNetwork: Bool) -> String {
+        guard request.str("subtype") == "can_use_tool" else {
+            return JSONLine.encode(["type": "control_response",
+                                    "response": ["subtype": "error", "request_id": requestId,
+                                                 "error": "Lectern doesn't handle \(request.str("subtype") ?? "this request")."]])
+        }
+        let decision: JSONObject
+        if allowNetwork, request.str("tool_name") == "SandboxNetworkAccess" {
+            decision = ["behavior": "allow", "updatedInput": request.obj("input") ?? [:]]
+        } else {
+            decision = ["behavior": "deny",
+                        "message": "Lectern doesn't allow this. Work only inside the output folder with the tools you have."]
+        }
+        return JSONLine.encode(["type": "control_response",
+                                "response": ["subtype": "success", "request_id": requestId, "response": decision] as JSONObject])
+    }
+
     /// `claude -p … --output-format json` prints one result object (some versions print an array of events).
     static func oneShotResult(_ stdout: String) -> JSONObject? {
         let trimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)

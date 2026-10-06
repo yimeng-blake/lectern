@@ -102,6 +102,12 @@ public final class ClaudeService: ProviderService {
         ClaudeSession(service: self, conversationId: conversationId)
     }
 
+    /// Personal ~/.claude/skills, enabled Claude Code plugins' skills and the Claude app's synced skills,
+    /// deduplicated by name in that order.
+    public func listSkills() async -> [SkillInfo] {
+        await Task.detached(priority: .userInitiated) { ClaudeSkills.discover() }.value
+    }
+
     /// Tiny real call (haiku). `auth status` can say loggedIn for a revoked token; this can't.
     public func verifyConnection() async -> Bool {
         guard let bin = currentBinary() else { return false }

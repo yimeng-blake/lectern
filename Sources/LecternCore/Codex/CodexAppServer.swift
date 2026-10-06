@@ -3,8 +3,8 @@ import Foundation
 /// JSON-RPC client for one `codex app-server` process (JSONL over stdio).
 ///
 /// The process starts lazily on the first request, and after a crash it is restarted lazily with
-/// exponential backoff. Every server→client request is answered (approvals are declined: Lectern
-/// never lets the model run commands or edit files).
+/// exponential backoff. Every server→client request is answered (approvals are declined: reader turns
+/// are read-only and skill turns get no more than their sandbox).
 @MainActor
 final class CodexAppServer {
     struct Launch {
@@ -291,8 +291,9 @@ final class CodexAppServer {
         }
     }
 
-    /// Declines approvals with the exact decision values from the 0.159.2 schema; everything else
-    /// gets a method-not-supported error so the server never waits on us.
+    /// Declines approvals with the exact decision values from the 0.160.0 schema (skill turns run with
+    /// approvalPolicy "never", so none should arrive); everything else gets a method-not-supported error
+    /// so the server never waits on us.
     private func answerServerRequest(id: Any, method: String) {
         var reply: JSONObject = ["id": id]
         switch method {
@@ -300,6 +301,11 @@ final class CodexAppServer {
             reply["result"] = ["decision": "decline"]
         case "execCommandApproval", "applyPatchApproval":
             reply["result"] = ["decision": ["denied": ["rejection": "Lectern is a read-only reader."]]]
+        case "item/permissions/requestApproval":
+            // Grants nothing beyond the turn's sandbox.
+            reply["result"] = ["permissions": JSONObject(), "scope": "turn"]
+        case "mcpServer/elicitation/request":
+            reply["result"] = ["action": "decline", "content": NSNull(), "_meta": NSNull()]
         default:
             reply["error"] = ["code": -32601, "message": "Not supported by Lectern"]
         }

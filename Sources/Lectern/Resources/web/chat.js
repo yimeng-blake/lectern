@@ -1,5 +1,6 @@
 // Lectern chat transcript. Swift pushes the message list with Lectern.sync(messages); the page
-// posts {type:"goto"|"copy"|"open"|"saveCSV"|"resync"} back through the "lectern" message handler.
+// posts {type:"goto"|"copy"|"open"|"saveCSV"|"resync"|"openFile"|"revealFile"} back through the
+// "lectern" message handler.
 // The pure helpers (renderMarkdown, extractMath, linkifyCitations, …) also load in node for tests.
 (function (root) {
   'use strict';
@@ -493,6 +494,49 @@
   }
 
   // ---------------------------------------------------------------------------------------------
+  // Skill turns: a chip on the question, a label and the output files on the answer
+
+  const SKILL_NOTE = ' · writes to Lectern Output · network on';
+
+  const FILE_KINDS = {
+    word: ['doc', 'docx', 'rtf', 'pages', 'odt'],
+    sheet: ['xls', 'xlsx', 'xlsm', 'csv', 'tsv', 'numbers', 'ods'],
+    slides: ['ppt', 'pptx', 'key', 'odp'],
+    pdf: ['pdf'],
+    image: ['png', 'jpg', 'jpeg', 'gif', 'tif', 'tiff', 'heic', 'webp', 'svg'],
+    text: ['md', 'markdown', 'txt', 'json', 'xml', 'yaml', 'yml', 'html', 'htm'],
+  };
+
+  function baseName(path) {
+    const s = String(path == null ? '' : path);
+    return s.slice(s.lastIndexOf('/') + 1);
+  }
+
+  /// The extension (lowercase; '' when none) and the icon kind of a file name.
+  function fileKind(name) {
+    const dot = name.lastIndexOf('.');
+    const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+    for (const kind of Object.keys(FILE_KINDS)) if (FILE_KINDS[kind].includes(ext)) return { ext, kind };
+    return { ext, kind: 'other' };
+  }
+
+  /// An answer's files: an icon (the extension, colored by kind), the name, Open and Show in Finder.
+  /// Buttons carry the file's index; the path itself goes to Swift from the message data.
+  function filesHTML(files) {
+    if (!Array.isArray(files) || !files.length) return '';
+    return '<ul>' + files.map((path, i) => {
+      const name = baseName(path);
+      const { ext, kind } = fileKind(name);
+      return '<li class="file" data-index="' + i + '" title="' + escapeHtml(path) + '">' +
+        '<span class="file-icon kind-' + kind + '" aria-hidden="true">' +
+        escapeHtml(ext ? ext.slice(0, 4).toUpperCase() : 'FILE') + '</span>' +
+        '<span class="file-name">' + escapeHtml(name) + '</span><span class="file-actions">' +
+        '<button type="button" class="file-open">Open</button>' +
+        '<button type="button" class="file-reveal">Show in Finder</button></span></li>';
+    }).join('') + '</ul>';
+  }
+
+  // ---------------------------------------------------------------------------------------------
   // Bridge to Swift
 
   function post(message) {
@@ -517,10 +561,11 @@
     pinned: true, // the reader is at the end of the transcript
   };
 
-  const FIELDS = ['role', 'provider', 'model', 'text', 'status', 'errorText', 'checksKey'];
+  const FIELDS = ['role', 'provider', 'model', 'text', 'status', 'errorText', 'checksKey', 'skill', 'filesKey'];
 
   function normalize(item) {
     const checks = Array.isArray(item.checks) && item.checks.length ? item.checks : null;
+    const files = Array.isArray(item.files) ? item.files.filter((f) => typeof f === 'string' && f) : [];
     return {
       id: String(item.id),
       role: item.role || 'assistant',
@@ -531,6 +576,9 @@
       errorText: item.errorText || '',
       checks,
       checksKey: checks ? JSON.stringify(checks) : '',
+      skill: item.skill || '',
+      files,
+      filesKey: files.join('\n'),
     };
   }
 
@@ -551,7 +599,7 @@
       } else {
         const data = normalize(item);
         if (!entry) {
-          entry = { data, el: null, renderedText: null, renderedCaret: false, renderedChecks: '' };
+          entry = { data, el: null, renderedText: null, renderedCaret: false, renderedChecks: '', renderedFiles: null };
           state.entries.set(id, entry);
           state.dirty.add(id);
           if (data.role === 'user') state.forceScroll = true;
@@ -648,7 +696,8 @@
     el.id = 'msg-' + entry.data.id;
     el.dataset.id = entry.data.id;
     el.innerHTML =
-      '<div class="meta"></div><div class="body"></div><div class="status"></div>' +
+      '<div class="skill-chip"></div><div class="meta"></div><div class="body"></div>' +
+      '<div class="files"></div><div class="status"></div>' +
       '<div class="actions"><button type="button" class="copy" title="Copy answer as Markdown">' +
       COPY_ICON + '<span>Copy</span></button></div>';
     entry.el = el;
@@ -664,8 +713,14 @@
     const body = el.querySelector('.body');
     const status = el.querySelector('.status');
 
+    el.querySelector('.skill-chip').textContent = d.role === 'user' && d.skill ? 'Skill: ' + d.skill + SKILL_NOTE : '';
+    if (entry.renderedFiles !== d.filesKey) {
+      el.querySelector('.files').innerHTML = d.role === 'assistant' ? filesHTML(d.files) : '';
+      entry.renderedFiles = d.filesKey;
+    }
     if (d.role === 'assistant') {
-      meta.textContent = d.model ? d.provider + ' · ' + d.model : d.provider;
+      meta.innerHTML = escapeHtml(d.model ? d.provider + ' · ' + d.model : d.provider) +
+        (d.skill ? ' <span class="skill-tag">Skill: ' + escapeHtml(d.skill) + '</span>' : '');
       const caret = d.status === 'streaming' && d.text.length > 0;
       if (entry.renderedText !== d.text || entry.renderedCaret !== caret || entry.renderedChecks !== d.checksKey) {
         body.innerHTML = d.text ? renderMarkdown(d.text, d.checks) : '';
@@ -689,7 +744,8 @@
   function statusHTML(d) {
     switch (d.status) {
       case 'thinking':
-        return '<span class="thinking">Thinking<span class="dots"><i></i><i></i><i></i></span></span>';
+        return '<span class="thinking">' + (d.skill ? 'Running skill' : 'Thinking') +
+          '<span class="dots"><i></i><i></i><i></i></span></span>';
       case 'streaming':
         return d.text ? '' : '<span class="thinking"><span class="dots"><i></i><i></i><i></i></span></span>';
       case 'interrupted':
@@ -753,9 +809,26 @@
     }
   }
 
+  /// Open / Show in Finder on an answer's file: posts that file's path. Returns the message, or null.
+  function onFileButton(button) {
+    const item = button.closest('li.file');
+    const article = button.closest('article');
+    const entry = article && state.entries.get(article.dataset.id);
+    const path = entry && item ? entry.data.files[parseInt(item.dataset.index, 10)] : null;
+    if (!path) return null;
+    const message = { type: button.classList.contains('file-open') ? 'openFile' : 'revealFile', path };
+    post(message);
+    return message;
+  }
+
   function onClick(event) {
     const target = event.target;
     if (!target || !target.closest) return;
+    const fileButton = target.closest('button.file-open, button.file-reveal');
+    if (fileButton) {
+      onFileButton(fileButton);
+      return;
+    }
     const anchor = target.closest('a');
     if (anchor) {
       event.preventDefault();
@@ -799,6 +872,9 @@
     toCSV,
     escapeHtml,
     copyMessage,
+    fileKind,
+    filesHTML,
+    onFileButton,
     flushNow() { if (state.scheduled) flush(); },
     setTextSize,
     setFont,

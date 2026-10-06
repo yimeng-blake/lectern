@@ -53,7 +53,7 @@ public final class CodexService: ProviderService {
     @ObservationIgnored private(set) var accountType: String?
     /// Set by markAuthExpired. A failed turn beats account/read, which only reports what is stored.
     @ObservationIgnored private var expiredReason: String?
-    @ObservationIgnored private var launchedHomeMode: CodexHomeMode?
+    @ObservationIgnored private(set) var launchedHomeMode: CodexHomeMode?
     @ObservationIgnored private var stateBeforeLogin: AuthState?
     /// Bumped by every startLogin/cancelLogin so a stale account/login/start reply is abandoned.
     @ObservationIgnored private var loginAttempt = 0
@@ -66,6 +66,10 @@ public final class CodexService: ProviderService {
     @ObservationIgnored private var accountEpoch = 0
     @ObservationIgnored private var authObservers: [@MainActor (AuthState) -> Void] = []
     @ObservationIgnored private var versionPath: String?
+    /// App-server generation whose skill extra roots are set (isolated home; see CodexSkills.swift).
+    @ObservationIgnored var skillRootsGeneration: Int?
+    /// `threadConfig()` for one app-server generation.
+    @ObservationIgnored var threadConfigCache: (generation: Int, config: JSONObject)?
 
     public convenience init(pathOverride: @escaping @MainActor () -> String?,
                             homeMode: @escaping @MainActor () -> CodexHomeMode) {
