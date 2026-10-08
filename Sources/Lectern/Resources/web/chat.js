@@ -753,7 +753,10 @@
       case 'failed':
         return '<div class="error">' + escapeHtml(d.errorText || 'Something went wrong.') + '</div>';
       case 'waitingForLogin':
-        return '<span class="waiting">Waiting for you to log in — will send automatically</span>';
+        // On This Mac has no login: it waits for a model (Ollama opened or a download finished).
+        return '<span class="waiting">' + (d.provider === 'On This Mac'
+          ? 'Waiting for a model on this Mac — will send automatically'
+          : 'Waiting for you to log in — will send automatically') + '</span>';
       default:
         return '';
     }

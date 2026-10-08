@@ -19,20 +19,41 @@ struct SettingsView: View {
 
 // MARK: - Accounts
 
+/// The four providers as the setup window's cards in compact rows (status, the one button and the
+/// inline flow), each followed by its details.
 @MainActor
 private struct AccountsSettings: View {
     private var app: AppServices { .shared }
+    private var setup: SetupModel { .shared }
 
     var body: some View {
         Form {
-            Section("Claude") {
-                ClaudeAccountSection(service: app.claude)
+            ForEach(Provider.setupOrder) { provider in
+                Section {
+                    ProviderSetupRow(provider: provider, model: setup)
+                    details(provider)
+                }
             }
-            Section("ChatGPT") {
-                CodexAccountSection(service: app.codex, homeMode: app.settings.codexHomeMode)
+            Section {
+                HStack {
+                    Text("New to Lectern? The setup window shows the four choices side by side.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Set Up AI\u{2026}") { SetupWindow.shared.show() }
+                }
             }
         }
         .formStyle(.grouped)
+    }
+
+    @ViewBuilder private func details(_ provider: Provider) -> some View {
+        switch provider {
+        case .claude: ClaudeAccountSection(service: app.claude)
+        case .codex: CodexAccountSection(service: app.codex, homeMode: app.settings.codexHomeMode)
+        case .grok: GrokAccountSection(service: app.grok)
+        case .local: LocalAccountSection(service: app.local)
+        }
     }
 }
 
@@ -45,25 +66,25 @@ private struct ClaudeAccountSection: View {
     @State private var version: String?
 
     var body: some View {
-        AuthStatusRows(state: service.authState, email: service.accountEmail, plan: service.planName,
-                       installIssue: service.installIssue, refresh: service.refreshAuth)
-        BinaryRow(path: service.binaryPath, version: version)
-            .task(id: service.binaryPath) { version = await Self.cliVersion(service.binaryPath) }
-        LoginProgressRow(state: service.authState, cancel: service.cancelLogin)
-        HStack {
-            Button("Log in in Terminal") { service.startLogin(.terminal) }
-                .help("Opens Terminal running Claude Code's own `claude auth login`")
-            Spacer()
-            verificationLabel
-            Button("Verify connection") { verify() }
-                .disabled(verification == .running)
-                .help("Sends one tiny message with Haiku. The login status alone can be out of date.")
+        if service.binaryPath != nil {
+            BinaryRow(path: service.binaryPath, version: version)
+                .task(id: service.binaryPath) { version = await Self.cliVersion(service.binaryPath) }
+            QuotaRows(quota: service.quota)
+            HStack {
+                Button("Log in again") { service.startLogin(.terminal) }
+                    .help("Opens Terminal running Claude Code's own `claude auth login`")
+                    .disabled(!service.authState.isSignedIn)
+                Spacer()
+                verificationLabel
+                Button("Verify connection") { verify() }
+                    .disabled(verification == .running || !service.authState.isSignedIn)
+                    .help("Sends one tiny message with Haiku. The login status alone can be out of date.")
+            }
+            .disabled(service.installIssue != nil || service.authState.settingsLoginInProgress)
+            Text("You sign in with Claude Code itself, in Terminal. Lectern uses that login and never sees your credentials.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
-        .disabled(service.installIssue != nil || service.authState.settingsLoginInProgress)
-        Text("You sign in with Claude Code itself, in Terminal. Lectern uses that login and never sees your credentials.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        QuotaRows(quota: service.quota)
     }
 
     @ViewBuilder private var verificationLabel: some View {
@@ -100,117 +121,72 @@ private struct CodexAccountSection: View {
     @State private var confirmSignOut = false
 
     var body: some View {
-        AuthStatusRows(state: service.authState, email: service.accountEmail, plan: service.planName,
-                       installIssue: service.installIssue, refresh: service.refreshAuth)
-        BinaryRow(path: service.binaryPath, version: service.binaryVersion)
-        LoginProgressRow(state: service.authState, cancel: service.cancelLogin)
-        HStack {
-            Button("Sign in with ChatGPT") { service.startLogin(.browser) }
-            Button("Use a device code") { service.startLogin(.deviceCode) }
-            Spacer()
-            if homeMode == .isolated {
-                Button("Sign out") { confirmSignOut = true }
-                    .disabled(!service.authState.isSignedIn)
+        if service.binaryPath != nil {
+            BinaryRow(path: service.binaryPath, version: service.binaryVersion)
+            QuotaRows(quota: service.quota)
+            if homeMode == .isolated, service.authState.isSignedIn {
+                HStack {
+                    Spacer()
+                    Button("Sign out") { confirmSignOut = true }
+                }
+                .confirmationDialog("Sign out of ChatGPT in Lectern?", isPresented: $confirmSignOut) {
+                    Button("Sign Out", role: .destructive) { service.signOut() }
+                } message: {
+                    Text("Only Lectern's own sign-in is removed. The ChatGPT app and the Codex CLI stay signed in.")
+                }
+            }
+            if homeMode == .shared {
+                Text("Shared mode uses the login in ~/.codex. Signing in here also changes the login the Codex CLI uses.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
-        .disabled(service.installIssue != nil || service.authState.settingsLoginInProgress)
-        .confirmationDialog("Sign out of ChatGPT in Lectern?", isPresented: $confirmSignOut) {
-            Button("Sign Out", role: .destructive) { service.signOut() }
-        } message: {
-            Text("Only Lectern's own sign-in is removed. The ChatGPT app and the Codex CLI stay signed in.")
-        }
-        if homeMode == .shared {
-            Text("Shared mode uses the login in ~/.codex. Signing in here also changes the login the Codex CLI uses.")
+    }
+}
+
+@MainActor
+private struct GrokAccountSection: View {
+    let service: GrokService
+    @State private var version: String?
+
+    var body: some View {
+        if service.binaryPath != nil {
+            BinaryRow(path: service.binaryPath, version: version)
+                .task(id: service.binaryPath) { version = await ClaudeAccountSection.cliVersion(service.binaryPath) }
+            QuotaRows(quota: service.quota)
+            Text("You sign in on Grok's own sign-in page. Lectern never sees your password.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        QuotaRows(quota: service.quota)
     }
 }
 
 @MainActor
-private struct AuthStatusRows: View {
-    let state: AuthState
-    let email: String?
-    let plan: String?
-    let installIssue: String?
-    let refresh: () -> Void
+private struct LocalAccountSection: View {
+    let service: LocalService
 
     var body: some View {
-        LabeledContent("Status") {
-            HStack(spacing: 6) {
-                Image(systemName: symbol).foregroundStyle(tint)
-                Text(statusText).multilineTextAlignment(.trailing)
-                Button(action: refresh) { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.borderless)
-                    .help("Check the login status again")
-                    .disabled(state == .checking || state.settingsLoginInProgress)
-            }
-        }
-        let account = [email, plan].compactMap { $0 }.joined(separator: " · ")
-        if !account.isEmpty {
-            LabeledContent("Account", value: account)
-        }
-        if let installIssue {
-            Text(installIssue).font(.caption).foregroundStyle(.red)
+        LabeledContent("Apple Intelligence", value: appleText)
+        LabeledContent("Ollama", value: ollamaText)
+        Text("Models on this Mac are free and private: your questions and the PDF stay on this Mac.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    private var appleText: String {
+        switch service.appleStatus {
+        case .available: return "Ready"
+        case .unavailable: return "Not ready"
+        case .unsupported: return "Not available on this Mac"
         }
     }
 
-    private var statusText: String {
-        switch state {
-        case .unknown: return "Not checked yet"
-        case .checking: return "Checking…"
-        case .signedIn: return "Signed in"
-        case .signedOut(let reason): return reason
-        case .loggingIn: return "Signing in…"
-        case .failed(let message): return message
-        }
-    }
-
-    private var symbol: String {
-        switch state {
-        case .signedIn: return "checkmark.circle.fill"
-        case .signedOut, .failed: return "exclamationmark.circle.fill"
-        case .unknown, .checking, .loggingIn: return "circle.dotted"
-        }
-    }
-
-    private var tint: Color {
-        switch state {
-        case .signedIn: return .green
-        case .signedOut, .failed: return .orange
-        case .unknown, .checking, .loggingIn: return .secondary
-        }
-    }
-}
-
-@MainActor
-private struct LoginProgressRow: View {
-    let state: AuthState
-    let cancel: () -> Void
-
-    var body: some View {
-        if case .loggingIn(let progress) = state {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    ProgressView().controlSize(.small)
-                    Text(progress.message)
-                    Spacer()
-                    Button("Cancel", action: cancel)
-                }
-                if let code = progress.userCode {
-                    HStack {
-                        Text(code).font(.title3.monospaced()).textSelection(.enabled)
-                        Button("Copy") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(code, forType: .string)
-                        }
-                    }
-                }
-                if let url = progress.url {
-                    Link("Open the sign-in page", destination: url)
-                }
-            }
+    private var ollamaText: String {
+        switch service.ollamaStatus {
+        case .notInstalled: return "Not installed"
+        case .notRunning: return "Not open"
+        case .ready(let models):
+            return models.isEmpty ? "No models" : models.count == 1 ? "1 model" : "\(models.count) models"
         }
     }
 }
@@ -221,7 +197,7 @@ private struct BinaryRow: View {
     let version: String?
 
     var body: some View {
-        LabeledContent("CLI") {
+        LabeledContent("Program") {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(path ?? "Not found").textSelection(.enabled).lineLimit(1).truncationMode(.middle)
                 if let version { Text(version).font(.caption).foregroundStyle(.secondary) }
@@ -274,6 +250,12 @@ private struct ModelsSettings: View {
             Section("ChatGPT") {
                 ModelDefaultsRows(provider: .codex, service: app.codex, settings: settings)
             }
+            Section("Grok") {
+                ModelDefaultsRows(provider: .grok, service: app.grok, settings: settings)
+            }
+            Section("On This Mac") {
+                ModelDefaultsRows(provider: .local, service: app.local, settings: settings)
+            }
             Section {
                 Toggle("Protect purchased credits", isOn: $settings.protectCredits)
                 Text("When your included ChatGPT usage runs out, more messages would be paid from purchased credits. With this on, Lectern asks before sending such a message.")
@@ -321,7 +303,9 @@ private struct ModelDefaultsRows: View {
                 .help("Faster answers; each message uses about 2.5× as much of your included usage.")
         }
         if models.isEmpty {
-            Text(service.installIssue ?? "Loading models…").font(.caption).foregroundStyle(.secondary)
+            Text(provider == .local ? "No model is ready on this Mac yet. Set one up in Accounts."
+                 : service.installIssue ?? "Loading models…")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -380,6 +364,10 @@ private struct AdvancedSettings: View {
                     Text("Shared — uses ~/.codex login and your plugins").tag(CodexHomeMode.shared)
                 }
                 .pickerStyle(.radioGroup)
+            }
+            Section("Grok") {
+                TextField("Path override", text: $settings.grokPathOverride, prompt: Text("Auto-detect"))
+                DetectedPathRow(path: app.grok.binaryPath)
             }
             Section("Context") {
                 Stepper(value: $settings.neighborRadius, in: 0...3) {

@@ -13,7 +13,7 @@ struct ProbeCommand {
 
 @MainActor
 func allProbeCommands() -> [ProbeCommand] {
-    claudeProbeCommands() + codexProbeCommands() + contextProbeCommands() + e2eProbeCommands()
+    claudeProbeCommands() + codexProbeCommands() + grokProbeCommands() + contextProbeCommands() + e2eProbeCommands() + localProbeCommands()
 }
 
 /// `--key value` style option lookup.

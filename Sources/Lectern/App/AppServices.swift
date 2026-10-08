@@ -10,11 +10,16 @@ final class AppServices {
     let settings: SettingsStore
     let claude: ClaudeService
     let codex: CodexService
+    /// xAI Grok through the official Grok app (Grok Build), signed in with the user's X or Grok account.
+    let grok: GrokService
+    /// No account: Apple's on-device model or a model in Ollama.
+    let local: LocalService
     let sessions: SessionStore
 
     @ObservationIgnored private var started = false
     @ObservationIgnored private var claudeRelocation: Task<Void, Never>?
     @ObservationIgnored private var codexRestart: Task<Void, Never>?
+    @ObservationIgnored private var grokRelocation: Task<Void, Never>?
     @ObservationIgnored private var liveModels: [WeakChatModel] = []
 
     private init() {
@@ -23,16 +28,39 @@ final class AppServices {
         claude = ClaudeService(pathOverride: { settings.claudePathOverrideValue })
         codex = CodexService(pathOverride: { settings.codexPathOverrideValue },
                              homeMode: { settings.codexHomeMode })
+        grok = GrokService(pathOverride: { settings.grokPathOverrideValue })
+        local = LocalService()
         sessions = SessionStore()
         settings.onBackendChange = { [weak self] change in self?.backendSettingChanged(change) }
     }
 
-    var providerServices: [Provider: ProviderService] { [.claude: claude, .codex: codex] }
+    var providerServices: [Provider: ProviderService] { [.claude: claude, .codex: codex, .grok: grok, .local: local] }
 
     func service(for provider: Provider) -> ProviderService {
         switch provider {
         case .claude: return claude
         case .codex: return codex
+        case .grok: return grok
+        case .local: return local
+        }
+    }
+
+    /// Installed and signed in (for On This Mac: a model is ready), so a question can be sent.
+    func isReady(_ provider: Provider) -> Bool {
+        let s = service(for: provider)
+        return s.installIssue == nil && s.authState.isSignedIn
+    }
+
+    var anyProviderReady: Bool { Provider.allCases.contains(where: isReady) }
+
+    /// A launch-time status check has not answered yet.
+    var isCheckingStatus: Bool {
+        providerServices.values.contains { s in
+            guard s.installIssue == nil else { return false }
+            switch s.authState {
+            case .unknown, .checking: return true
+            default: return false
+            }
         }
     }
 
@@ -59,10 +87,12 @@ final class AppServices {
         }
     }
 
-    /// App is quitting: stop every Claude process and the Codex app-server.
+    /// App is quitting: stop every Claude process, the Codex app-server and a model download.
     func shutdown() {
         claudeRelocation?.cancel()
         codexRestart?.cancel()
+        grokRelocation?.cancel()
+        local.cancelDownload()
         for entry in liveModels { entry.model?.shutdown() }
         liveModels.removeAll()
         codex.stop()
@@ -82,6 +112,13 @@ final class AppServices {
             scheduleCodexRestart(after: .milliseconds(800))
         case .codexHomeMode:
             scheduleCodexRestart(after: .zero)
+        case .grokPath:
+            grokRelocation?.cancel()
+            grokRelocation = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(800))
+                guard !Task.isCancelled, let self else { return }
+                self.grok.relocateBinary()
+            }
         }
     }
 

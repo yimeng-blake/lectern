@@ -51,6 +51,9 @@ public enum ConversationTitler {
             // oneShot also applies the purchased-credits guard.
             guard codex.authState.isSignedIn else { return nil }
             reply = await withDeadline(timeout) { await codex.oneShot(prompt: prompt, timeout: timeout) }
+        case .grok, .local:
+            // Titles for these use the local fallback for now.
+            reply = nil
         }
         return reply.flatMap(cleanTitle)
     }

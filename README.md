@@ -2,23 +2,25 @@
 
 ![Lectern with a PDF, the page thumbnails and the chat pane](docs/screenshot.png)
 
-Lectern is a PDF reader for macOS with a chat pane next to the page. In the chat pane, you can ask Claude or ChatGPT
-about the PDF. Lectern uses your Claude and ChatGPT plans. It sends your questions through the command-line tools
-(CLIs) from Anthropic and OpenAI: Claude Code for Claude and Codex for ChatGPT.
+Lectern is a PDF reader for macOS with a chat pane next to the page. In the chat pane, you can ask an AI about the
+PDF: Claude, ChatGPT, Grok or an AI model on your Mac. For Claude, ChatGPT and Grok, Lectern uses your plans. It sends
+your questions through the command-line tools (CLIs) of the providers: Claude Code, Codex and Grok Build. **On This
+Mac** uses Apple Intelligence or the free Ollama app, with no account.
 
 The answers have page citations, for example `[p. 12]`. Each citation is a link to its page. For each PDF, you can
 have up to 4 conversations, in 1 or 2 columns. Lectern gives each conversation a short title about its topic.
 
 ## Before you start
 
-- **Not from Anthropic or OpenAI.** Lectern is an open-source project of one person. Anthropic and OpenAI did not make
-  Lectern, and they do not give money to the project.
+- **Not from Anthropic, OpenAI or xAI.** Lectern is an open-source project of one person. Anthropic, OpenAI and xAI
+  did not make Lectern, and they do not give money to the project.
 - **Your plans.** Each message uses part of the usage limits of your plan. Lectern is for personal, non-commercial use
   of your plans. Read the terms of your plans before you use Lectern.
 - **No credentials in Lectern.** Lectern never reads, keeps or sends your passwords, tokens or API keys. The CLIs keep
   your sign-ins.
 - **No server.** Lectern has no server, no analytics and no telemetry. It sends your questions and the text of the
-  PDF only to the provider that you use. A [skill message](docs/GUIDE.md#use-a-skill) can also use the internet.
+  PDF only to the provider that you use. With **On This Mac**, your questions and the PDF do not go out of your Mac. A
+  [skill message](docs/GUIDE.md#use-a-skill) can also use the internet.
 - **Read-only.** Lectern never changes your PDFs.
 
 This README has a CAUTION notice. Read the CAUTION before you do the step that follows it.
@@ -32,6 +34,8 @@ The [Lectern guide](docs/GUIDE.md) has all the procedures and details.
 | Mac | A Mac with Apple Silicon and macOS 14 or later. |
 | For Claude | A Claude plan with Claude Code (for example Pro or Max), and Claude Code on your Mac. |
 | For ChatGPT | A ChatGPT plan with Codex, and the ChatGPT desktop app or the Codex CLI from npm. |
+| For Grok | An X or Grok account (a free account is sufficient), and Grok Build on your Mac. |
+| For On This Mac | Apple Intelligence on macOS 26 or later, or the free [Ollama](https://ollama.com/download) app. |
 
 ### Install the CLIs
 
@@ -43,8 +47,10 @@ To run a command, type it in Terminal (Applications > Utilities > Terminal). The
 2. For Claude, run `curl -fsSL https://claude.ai/install.sh | bash`.
 3. For ChatGPT, install the [ChatGPT desktop app](https://openai.com/chatgpt/desktop/). You can also run
    `npm i -g @openai/codex`.
+4. For Grok, run `curl -fsSL https://x.ai/cli/install.sh | bash`.
 
-For other methods, refer to [Install the CLIs](docs/GUIDE.md#install-the-clis) in the guide.
+Lectern can also install Claude Code and Grok Build for you. Refer to [Choose an AI](#choose-an-ai). For other
+methods, refer to [Install the CLIs](docs/GUIDE.md#install-the-clis) in the guide.
 
 ## Install Lectern
 
@@ -92,6 +98,22 @@ more information about the build, refer to [Option B](docs/GUIDE.md#option-b-bui
 
 ## First steps
 
+### Choose an AI
+
+When you open Lectern for the first time, Lectern shows the **Choose your AI** window. It has 4 cards:
+
+- **On This Mac** is free and private, with no account, and uses Apple Intelligence or a model in Ollama.
+- **ChatGPT** uses your ChatGPT account through the ChatGPT app.
+- **Claude** uses your Claude account through Claude Code.
+- **Grok** uses your X or Grok account through Grok Build.
+
+1. On a card, click the button, for example **Set up** or **Sign in**. The card opens and shows the next step.
+2. Do the steps on the card.
+3. When the card shows **Ready**, click **Use**. Then click **Done**.
+
+To open the window again, select **Lectern > Set Up AI…**. For more information, refer to
+[Choose your AI](docs/GUIDE.md#choose-your-ai) in the guide.
+
 ### Open a PDF
 
 1. Open Lectern. Lectern shows the Open panel.
@@ -122,15 +144,15 @@ refer to [Select Isolated or Shared](docs/GUIDE.md#select-isolated-or-shared-cha
 > If your Codex CLI must keep its ChatGPT sign-in, do not sign in to ChatGPT in Lectern in Shared mode. In Shared
 > mode, a ChatGPT sign-in in Lectern also changes the sign-in of your Codex CLI.
 
-1. In the banner or in Settings > Accounts, click **Sign in with ChatGPT**. Lectern opens the ChatGPT sign-in page in
-   your web browser.
+1. In the banner, click **Sign in with ChatGPT**. In Settings > Accounts, click **Sign in**. Lectern opens the
+   sign-in page in your web browser.
 2. Do the sign-in steps in the browser.
 
 To sign in with a device code, refer to [Sign in to ChatGPT](docs/GUIDE.md#sign-in-to-chatgpt) in the guide.
 
 ### Ask a question
 
-1. In the chat header, select Claude or ChatGPT in the provider picker.
+1. In the chat header, select an AI in the provider picker.
 2. Optional: mark text in the PDF. Lectern sends the marked text with your question.
 3. Type your question in the message field at the bottom of the chat pane.
 4. Press Return. Lectern sends the question with the current page (the page in the page box) and the pages near it.

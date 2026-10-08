@@ -13,6 +13,7 @@ struct StoredConversation: Codable, Equatable, Identifiable {
     var provider: Provider?
     /// Claude session UUID; only set once a turn completed under it.
     var claudeSessionId: String?
+    var grokSessionId: String?
     /// Codex thread id; only set once a turn completed in it.
     var codexThreadId: String?
     var messages: [ChatMessage]
@@ -36,7 +37,7 @@ struct StoredConversation: Codable, Equatable, Identifiable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, titleIsCustom, provider, claudeSessionId, codexThreadId, messages, collapsed, colorTag
+        case id, title, titleIsCustom, provider, claudeSessionId, codexThreadId, grokSessionId, messages, collapsed, colorTag
     }
 
     /// Lenient: a missing or unknown field (a newer Lectern's provider, say) must not cost the messages.
@@ -49,6 +50,7 @@ struct StoredConversation: Codable, Equatable, Identifiable {
         provider = try? c.decodeIfPresent(Provider.self, forKey: .provider)
         claudeSessionId = try c.decodeIfPresent(String.self, forKey: .claudeSessionId)
         codexThreadId = try c.decodeIfPresent(String.self, forKey: .codexThreadId)
+        grokSessionId = try c.decodeIfPresent(String.self, forKey: .grokSessionId)
         messages = try c.decodeIfPresent([ChatMessage].self, forKey: .messages) ?? []
         collapsed = (try? c.decodeIfPresent(Bool.self, forKey: .collapsed)) ?? false
         colorTag = try? c.decodeIfPresent(ConversationTag.self, forKey: .colorTag)
@@ -58,6 +60,8 @@ struct StoredConversation: Codable, Equatable, Identifiable {
         switch provider {
         case .claude: return claudeSessionId
         case .codex: return codexThreadId
+        case .grok: return grokSessionId
+        case .local: return nil
         }
     }
 }

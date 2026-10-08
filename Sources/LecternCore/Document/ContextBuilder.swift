@@ -36,6 +36,10 @@ public struct ContextOptions: Sendable {
         switch provider {
         case .claude: return model.lowercased().contains("haiku") ? 140_000 : 300_000
         case .codex: return 150_000
+        case .grok: return 200_000
+        // Apple's on-device model has a ~4K-token window; Ollama models run with a num_ctx set by this
+        // Mac's memory and the model's own window (half of it goes to the pages).
+        case .local: return LocalModelLimits.contextBudget(for: model)
         }
     }
 }

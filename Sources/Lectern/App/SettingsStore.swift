@@ -5,7 +5,7 @@ import LecternCore
 /// App-wide preferences, persisted in UserDefaults.
 @MainActor @Observable
 final class SettingsStore {
-    enum BackendChange { case claudePath, codexPath, codexHomeMode }
+    enum BackendChange { case claudePath, codexPath, codexHomeMode, grokPath }
 
     private enum Key {
         static func turnSettings(_ p: Provider) -> String { "turnSettings.\(p.rawValue)" }
@@ -13,6 +13,8 @@ final class SettingsStore {
         static let codexHomeMode = "codexHomeMode"
         static let claudePathOverride = "claudePathOverride"
         static let codexPathOverride = "codexPathOverride"
+        static let grokPathOverride = "grokPathOverride"
+        static let setupShown = "setupShown"
         static let neighborRadius = "neighborRadius"
         static let lastProvider = "lastProvider"
         static let appearance = "appearance"
@@ -55,6 +57,18 @@ final class SettingsStore {
             defaults.set(codexPathOverride, forKey: Key.codexPathOverride)
             onBackendChange?(.codexPath)
         }
+    }
+    /// "" = auto-detect.
+    var grokPathOverride: String {
+        didSet {
+            guard grokPathOverride != oldValue else { return }
+            defaults.set(grokPathOverride, forKey: Key.grokPathOverride)
+            onBackendChange?(.grokPath)
+        }
+    }
+    /// The "Choose your AI" window was shown once (first launch).
+    var setupShown: Bool {
+        didSet { defaults.set(setupShown, forKey: Key.setupShown) }
     }
     /// Pages on each side of the current page sent as context (0–3).
     var neighborRadius: Int {
@@ -107,6 +121,8 @@ final class SettingsStore {
         codexHomeMode = defaults.string(forKey: Key.codexHomeMode).flatMap(CodexHomeMode.init(rawValue:)) ?? .isolated
         claudePathOverride = defaults.string(forKey: Key.claudePathOverride) ?? ""
         codexPathOverride = defaults.string(forKey: Key.codexPathOverride) ?? ""
+        grokPathOverride = defaults.string(forKey: Key.grokPathOverride) ?? ""
+        setupShown = defaults.bool(forKey: Key.setupShown)
         neighborRadius = defaults.object(forKey: Key.neighborRadius) as? Int ?? 1
         lastProvider = defaults.string(forKey: Key.lastProvider).flatMap(Provider.init(rawValue:)) ?? .claude
         appearance = defaults.string(forKey: Key.appearance).flatMap(AppAppearance.init(rawValue:)) ?? .system
@@ -123,6 +139,7 @@ final class SettingsStore {
 
     var claudePathOverrideValue: String? { Self.nonEmpty(claudePathOverride) }
     var codexPathOverrideValue: String? { Self.nonEmpty(codexPathOverride) }
+    var grokPathOverrideValue: String? { Self.nonEmpty(grokPathOverride) }
     var contextRadius: Int { min(max(neighborRadius, 0), 3) }
 
     /// The defaults to use for a turn, made valid against the provider's current model catalog.
@@ -151,13 +168,14 @@ enum ModelCatalog {
         models.first { $0.id == model } ?? models.first { $0.isDefault } ?? models.first
     }
 
-    /// Codex models come and go (gpt-5.5 retires 2026-10-14), so a saved Codex model that is missing
-    /// from the catalog falls back to the catalog default with its default effort. Claude accepts any
-    /// alias or full id, so its saved model is kept. Unknown catalogs leave settings untouched.
+    /// Codex models come and go (gpt-5.5 retires 2026-10-14), and so do the models on this Mac (Ollama
+    /// models removed, Apple Intelligence turned off), so a saved Codex or local model that is missing
+    /// from the catalog falls back to the catalog default with its default effort. Claude and Grok accept
+    /// any alias or full id, so their saved model is kept. Unknown catalogs leave settings untouched.
     static func resolve(_ saved: TurnSettings, provider: Provider, models: [ModelOption]) -> TurnSettings {
         guard !models.isEmpty else { return saved }
         var s = saved
-        if provider == .codex, !models.contains(where: { $0.id == s.model }) {
+        if provider == .codex || provider == .local, !models.contains(where: { $0.id == s.model }) {
             let fallback = models.first(where: { $0.isDefault }) ?? models[0]
             s.model = fallback.id
             s.effort = fallback.defaultEffort ?? ""

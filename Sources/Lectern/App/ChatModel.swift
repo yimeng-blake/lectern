@@ -81,7 +81,16 @@ final class ChatModel: Identifiable {
     func isBusy(_ p: Provider) -> Bool { activeTurns[p] != nil }
     var quota: QuotaSnapshot? { quota(for: provider) }
     var installIssue: String? { service(provider).installIssue }
+    /// Any provider's install problem, for the provider picker.
+    func installIssue(for p: Provider) -> String? { service(p).installIssue }
     var resolvedModel: String? { resolvedModels[provider] }
+
+    /// A reported model as people read it: On This Mac ids ("ollama:gemma4:26b", "apple.on-device")
+    /// show their catalog name; the other providers report readable ids.
+    func modelLabel(_ id: String, for p: Provider) -> String {
+        guard p == .local else { return id }
+        return service(p).models.first { $0.id == id }?.displayName ?? id
+    }
 
     private(set) var messages: [ChatMessage] = []
     var isBusy: Bool { activeTurns[provider] != nil }
@@ -205,9 +214,12 @@ final class ChatModel: Identifiable {
 
     /// What the stack saves for this conversation.
     var stored: StoredConversation {
-        StoredConversation(id: id, title: title, titleIsCustom: titleIsCustom, provider: provider,
-                           claudeSessionId: conversationIds[.claude], codexThreadId: conversationIds[.codex],
-                           messages: messages, collapsed: isCollapsed, colorTag: colorTag)
+        var stored = StoredConversation(id: id, title: title, titleIsCustom: titleIsCustom, provider: provider,
+                                        claudeSessionId: conversationIds[.claude],
+                                        codexThreadId: conversationIds[.codex],
+                                        messages: messages, collapsed: isCollapsed, colorTag: colorTag)
+        stored.grokSessionId = conversationIds[.grok]
+        return stored
     }
 
     // MARK: Actions
@@ -598,7 +610,8 @@ final class ChatModel: Identifiable {
         let replyId = turn.assistantMessageId
         switch event {
         case .sessionReady(let model):
-            update(replyId) { $0.model = model }
+            let label = modelLabel(model, for: p)
+            update(replyId) { $0.model = label }
         case .thinking:
             update(replyId) { if $0.text.isEmpty { $0.status = .thinking } }
         case .textDelta(let delta):
@@ -782,8 +795,10 @@ final class ChatModel: Identifiable {
     private func conversationReset(_ p: Provider) {
         conversationIds[p] = nil
         resetContext(p)
-        let notice = ChatMessage(role: .notice, provider: p, text:
-            "The earlier \(p.displayName) conversation could not be resumed, so a new one was started. Pages will be sent again.")
+        // On This Mac models have small windows: a reset there means the conversation got too long.
+        let notice = ChatMessage(role: .notice, provider: p, text: p == .local
+            ? "The conversation got too long for this model, so a new one was started. Pages will be sent again."
+            : "The earlier \(p.displayName) conversation could not be resumed, so a new one was started. Pages will be sent again.")
         if let turn = activeTurns[p], let i = messages.firstIndex(where: { $0.id == turn.pending.userMessageId }) {
             messages.insert(notice, at: i)
         } else {

@@ -11,10 +11,14 @@ This guide has CAUTION notices. Read each CAUTION before you do the step that fo
 - [Install the CLIs](#install-the-clis)
   - [Install Claude Code](#install-claude-code)
   - [Install Codex (for ChatGPT)](#install-codex-for-chatgpt)
+  - [Install Grok Build](#install-grok-build)
 - [Install Lectern](#install-lectern)
   - [Option A: Download the app](#option-a-download-the-app)
   - [Let macOS open Lectern](#let-macos-open-lectern)
   - [Option B: Build from source](#option-b-build-from-source)
+- [Choose your AI](#choose-your-ai)
+  - [Use Grok](#use-grok)
+  - [Use the AI on this Mac](#use-the-ai-on-this-mac)
 - [Sign in](#sign-in)
   - [Sign in to Claude](#sign-in-to-claude)
   - [Select Isolated or Shared (ChatGPT)](#select-isolated-or-shared-chatgpt)
@@ -58,21 +62,23 @@ This guide has CAUTION notices. Read each CAUTION before you do the step that fo
 
 Read this information before you use Lectern.
 
-- **Not from Anthropic or OpenAI.** Lectern is an open-source project of one person. Anthropic and OpenAI did not make
-  Lectern. Lectern is not a product of Anthropic or OpenAI, and these companies do not give money to the project.
-- **Your plans, through the CLIs from Anthropic and OpenAI.** Lectern uses your Claude and ChatGPT plans. It runs the
-  `claude` and `codex` command-line tools (CLIs) from Anthropic and OpenAI as child processes, without changes.
-  Lectern sends your questions and the text of the PDF only to the provider that you use, through the CLI of that
-  provider. Lectern has no server, no analytics and no telemetry.
+- **Not from Anthropic, OpenAI or xAI.** Lectern is an open-source project of one person. Anthropic, OpenAI and xAI
+  did not make Lectern. Lectern is not a product of these companies, and they do not give money to the project.
+- **Your plans, through the CLIs of the providers.** Lectern uses your Claude, ChatGPT and Grok plans. It runs the
+  `claude`, `codex` and `grok` command-line tools (CLIs) from Anthropic, OpenAI and xAI as child processes, without
+  changes. Lectern sends your questions and the text of the PDF only to the provider that you use, through the CLI of
+  that provider. Lectern has no server, no analytics and no telemetry.
+- **On This Mac.** With **On This Mac**, an AI model on your Mac gives the answers. Your questions and the PDF do not
+  go out of your Mac. Refer to [Use the AI on this Mac](#use-the-ai-on-this-mac).
 - **No credentials in Lectern.** Lectern never reads, keeps or sends your passwords, tokens or API keys. You sign in
-  with the sign-in procedures of Anthropic and OpenAI, and the CLIs keep these sign-ins. In Isolated mode (the
+  with the sign-in procedures of Anthropic, OpenAI and xAI, and the CLIs keep these sign-ins. In Isolated mode (the
   default), Codex keeps a separate Lectern sign-in for ChatGPT in the Lectern folder
   (`~/Library/Application Support/Lectern`). Refer to [Privacy and usage](#privacy-and-usage).
 - **Read-only.** Lectern never changes your PDFs. It keeps your conversations, the last page and the zoom in the
   Lectern folder, never in the PDF.
-- **Plan terms.** Lectern is for personal, non-commercial use of your Claude and ChatGPT plans. Read the terms of your
-  plans before you use Lectern. Each message uses part of the usage limits of your plan, the same as in the Claude and
-  ChatGPT apps.
+- **Plan terms.** Lectern is for personal, non-commercial use of your Claude, ChatGPT and Grok plans. Read the terms
+  of your plans before you use Lectern. Each message uses part of the usage limits of your plan, the same as in the
+  apps of the providers.
 
 ## Necessary items
 
@@ -81,6 +87,8 @@ Read this information before you use Lectern.
 | Mac | A Mac with Apple Silicon and macOS 14 or later. |
 | For Claude | A Claude plan with Claude Code (for example Pro or Max), and Claude Code on your Mac. |
 | For ChatGPT | A ChatGPT plan with Codex, and the ChatGPT desktop app or the Codex CLI from npm. |
+| For Grok | An X or Grok account, and Grok Build (the `grok` CLI) on your Mac. A free account is sufficient. |
+| For On This Mac | Apple Intelligence (macOS 26 or later), or the free Ollama app with a model. No account. |
 
 The author tested Lectern only on macOS 26. If you use Lectern on macOS 14 or 15, send a report to the author. To send
 a report, write an issue on the [Issues page](https://github.com/yimeng-blake/lectern/issues) of Lectern on GitHub.
@@ -90,10 +98,11 @@ a report, write an issue on the [Issues page](https://github.com/yimeng-blake/le
 **Commands.** This guide tells you to run commands in Terminal (Applications > Utilities > Terminal). To run a
 command, type the command in Terminal. Then press Return.
 
-Do these steps to install the CLIs:
+Lectern can install Claude Code and Grok Build for you. Refer to [Choose your AI](#choose-your-ai). To install the
+CLIs in Terminal, do these steps:
 
 1. If Lectern is open, quit Lectern.
-2. Install only the CLIs for the providers that you use. Refer to the next two sections.
+2. Install only the CLIs for the providers that you use. Refer to the next three sections.
 3. After the installation, open Lectern.
 
 ### Install Claude Code
@@ -126,6 +135,18 @@ Use one of these methods:
 Lectern finds a Codex from npm automatically if you installed Node.js with Homebrew, with nvm or with the installer
 from nodejs.org. If you use fnm, volta, asdf or a different Node.js version manager, refer to
 [Problems and remedies](#problems-and-remedies).
+
+### Install Grok Build
+
+1. Open Terminal.
+2. Run this command:
+
+   ```sh
+   curl -fsSL https://x.ai/cli/install.sh | bash
+   ```
+
+The installer of xAI puts `grok` in `~/.grok/bin`. It also adds this folder to the `PATH` in the settings files of
+your shell. If `grok` is in a different folder, set its path in Settings > Advanced (**Grok**).
 
 ## Install Lectern
 
@@ -217,10 +238,113 @@ Notes:
   [Issues page](https://github.com/yimeng-blake/lectern/issues) of Lectern on GitHub. Attach the Terminal output to
   the issue.
 
+## Choose your AI
+
+The **Choose your AI** window shows the 4 AI choices of Lectern on cards:
+
+- **On This Mac** is free and private, with no account. Refer to [Use the AI on this Mac](#use-the-ai-on-this-mac).
+- **ChatGPT** uses your ChatGPT account through the ChatGPT app.
+- **Claude** uses your Claude account through Claude Code.
+- **Grok** uses your X or Grok account through Grok Build. Refer to [Use Grok](#use-grok).
+
+Lectern shows this window when you open Lectern for the first time. Lectern also shows it at startup if no AI is
+ready and no PDF is open. To open the window at a different time, select **Lectern > Set Up AI…**. In the provider
+picker of the chat pane, **Set Up Grok…** (and the items for the other AIs) opens the window at that card.
+
+Each card shows a status: **Ready**, **Not signed in**, **Not set up** or **Unavailable**. Each card has one button,
+for example **Use**, **Sign in**, **Set up** or **Download a model**.
+
+1. Click the button on a card, or click the card. The card opens and shows the next step.
+2. Do the steps on the card. The card shows the progress, and a green check mark when a step is done.
+3. If the card shows a problem, click **Try again**.
+4. To go back to all 4 cards, click × on the card or press Esc.
+5. When a card shows **Ready**, click **Use**. New conversations use that AI.
+6. Click **Done**.
+
+**Use** changes only new conversations. To change the AI of a conversation, select an AI in the provider picker of
+the chat pane. If the AI for new conversations is not ready when you click **Done**, Lectern selects the first ready
+card. Settings > Accounts shows the same cards in rows.
+
+These are the steps on each card:
+
+- **ChatGPT:** If Lectern does not find the ChatGPT app, click **Get the ChatGPT app**. Install the app, then click
+  **Check again**. Then click **Sign in with ChatGPT**. Refer to [Sign in to ChatGPT](#sign-in-to-chatgpt).
+- **Claude:** If Lectern does not find Claude Code, click **Set up Claude**. Lectern runs the installer from claude.ai
+  (`curl -fsSL https://claude.ai/install.sh | bash`). Then click **Log in**. Refer to
+  [Sign in to Claude](#sign-in-to-claude).
+- **Grok:** Refer to [Use Grok](#use-grok).
+- **On This Mac:** Refer to [Use the AI on this Mac](#use-the-ai-on-this-mac).
+
+### Use Grok
+
+Grok uses Grok Build, the CLI of xAI, with your X or Grok account. A free account is sufficient. SuperGrok and X
+Premium+ accounts have higher usage limits. In Lectern, Grok does not use web search, files or other tools.
+
+**Install Grok Build from Lectern**
+
+1. In the Grok card, click **Set up**. Lectern runs the installer of xAI
+   (`curl -fsSL https://x.ai/cli/install.sh | bash`).
+2. Wait for "Grok is set up." This step usually is 1 minute.
+
+The installer also adds `~/.grok/bin` to the `PATH` in the settings files of your shell.
+
+**Sign in with the browser**
+
+1. Click **Sign in with Grok**. Lectern opens the sign-in page of xAI in your web browser.
+2. Sign in with X, Google, Apple or an email address.
+3. Go back to Lectern. The card shows **Ready**.
+
+**Sign in with a device code**
+
+1. Click **Use a device code**. Lectern shows a code.
+2. Click **Copy**.
+3. Click **Open the sign-in page**.
+4. Paste the code on the sign-in page.
+
+Grok Build keeps the sign-in. Lectern does not read it. You cannot use skills with Grok.
+
+### Use the AI on this Mac
+
+**On This Mac** uses an AI model on your Mac. It has no account and no cost. Your questions and the PDF do not go out
+of your Mac. Lectern uses Apple Intelligence or a model in Ollama, a free app.
+
+These models are smaller than Claude, ChatGPT and Grok. Their answers are shorter and not as exact. Apple Intelligence
+reads only a short part of the PDF at a time. If a conversation becomes too long for the model, Lectern starts a new
+conversation and sends the pages again. You cannot use skills with **On This Mac**.
+
+**Use Apple Intelligence**
+
+Apple Intelligence operates on a Mac with Apple Silicon and macOS 26 or later.
+
+1. Open **System Settings > Apple Intelligence & Siri**.
+2. Turn on **Apple Intelligence**.
+3. In Lectern, open the **On This Mac** card. The card shows "Apple Intelligence is ready."
+
+**Use Ollama**
+
+1. In the **On This Mac** card, click **Get Ollama**. Lectern opens the download page of Ollama in your web browser.
+2. Install Ollama. Then open Ollama.
+3. In Lectern, open the **On This Mac** card. The card shows models that you can download.
+4. Click **Download** for a model. The card shows the progress.
+5. When the download is done, the card shows **Ready**.
+
+If Ollama is on your Mac but it is not open, click **Open Ollama**. The first model on the card is the best model for
+the memory of your Mac. Each model on the card uses 2 to 7 GB of disk space.
+
+To stop a download, click **Cancel**. Ollama keeps the downloaded parts. If you download that model again, the
+download continues from that point.
+
+**Select the model**
+
+If your Mac has more than one model, click a model below **Model for new conversations**. Settings > Models (**On This
+Mac**) has the same setting. Lectern uses only the models on your Mac. It does not use the cloud models of Ollama.
+
 ## Sign in
 
 The chat pane has a banner at the top. The banner shows sign-in problems, installation problems and questions about
-purchased credits for the provider that you selected. You can also sign in from Settings > Accounts.
+purchased credits for the provider that you selected. You can also sign in from Settings > Accounts or from the
+**Choose your AI** window. For a provider that is not set up, the banner shows **Set Up…** (for example **Set Up
+Grok…**). This button opens the **Choose your AI** window at the card of that provider.
 
 ### Sign in to Claude
 
@@ -248,7 +372,7 @@ sign-in in this time, it shows "The Claude login timed out. Try again."
 
 After this error, click **Check again** or do this procedure again.
 
-**Log in in Terminal** is also in Settings > Accounts.
+In Settings > Accounts, the Claude row has **Log in** (or **Log in again** after a sign-in).
 
 ### Select Isolated or Shared (ChatGPT)
 
@@ -279,30 +403,32 @@ If you must sign in, use one of these procedures.
 
 **Sign in with the browser**
 
-1. In the banner or in Settings > Accounts, click **Sign in with ChatGPT**. Lectern opens the ChatGPT sign-in page in
-   your web browser.
+1. In the banner, click **Sign in with ChatGPT**. In Settings > Accounts, click **Sign in**. Lectern opens the ChatGPT
+   sign-in page in your web browser.
 2. Do the sign-in steps in the browser.
 
 **Sign in with a device code**
 
-1. In the banner or in Settings > Accounts, click **Use a device code**. Lectern shows a code. Lectern also opens the
-   sign-in page in your web browser.
+1. In the banner, click **Use a device code**. In Settings > Accounts or in the ChatGPT card, click **Use a device
+   code** below **Sign in with ChatGPT**. Lectern shows a code and opens the sign-in page in your web browser.
 2. Click **Copy** to copy the code.
-3. If the browser does not show the sign-in page, click **Open sign-in page**. (In Settings, the link is
-   **Open the sign-in page**.)
+3. If the browser does not show the sign-in page, click **Open sign-in page**. (In Settings and in the card, the link
+   is **Open the sign-in page**.)
 4. Paste the code on the sign-in page.
 
 ### Questions before you sign in
 
 If you ask a question before you sign in, Lectern keeps the question. The chat pane shows "Waiting for you to log
 in — will send automatically". Lectern sends the question after you sign in. If you close the window before the
-sign-in is complete, Lectern does not send the question.
+sign-in is complete, Lectern does not send the question. For **On This Mac**, the chat pane shows "Waiting for a model
+on this Mac — will send automatically". Lectern sends the question when a model is ready.
 
 ## Use the viewer
 
 ### Open a PDF
 
-If you open Lectern without a PDF, Lectern shows the Open panel. Select a PDF to open it.
+If you open Lectern without a PDF, Lectern shows the Open panel. Select a PDF to open it. The first time, Lectern
+shows the [Choose your AI](#choose-your-ai) window first, and the Open panel after you click **Done**.
 
 You can also use one of these methods:
 
@@ -528,9 +654,9 @@ The chat pane has these controls:
 | --- | --- | --- |
 | Title bar | Top of each conversation | Shows the color dot, the title, the arrow that collapses the conversation, the **Show this conversation alone** button (⤢) and the **Conversation** menu (⋯ button). |
 | **New Conversation** | Bottom of the chat pane | Adds a conversation after the others. |
-| Provider picker (Claude or ChatGPT) | Chat header | Selects the provider. Each provider has a separate conversation about the PDF. |
+| Provider picker (Claude, ChatGPT, Grok or On This Mac) | Chat header | Selects the provider. Each provider has a separate conversation about the PDF. A colored dot shows the status of each provider. |
 | Model picker | Chat header | Selects the model. |
-| Reasoning effort picker | Chat header | Selects the reasoning effort. |
+| Reasoning effort picker | Chat header | Selects the reasoning effort. **On This Mac** does not have this picker. |
 | **Fast** (ChatGPT only) | Chat header | Uses the priority tier. Refer to [Fast](#fast). |
 | **New chat** (pencil button) | Chat header | Starts a new conversation with the provider that you selected. The provider does not see the earlier messages. |
 | Account | Chat header | Shows the sign-in status. Click it to open the Settings window. If Settings does not show the Accounts tab, click **Accounts**. |
@@ -889,6 +1015,7 @@ conversation.
 | Menu or area | Command | Shortcut |
 | --- | --- | --- |
 | Lectern | Settings… | ⌘, |
+| Lectern | Set Up AI… (the **Choose your AI** window) | — |
 | File | Open… | ⌘O |
 | File | New Conversation | ⌥⌘N |
 | File | Go to Conversation 1, 2, 3 or 4 (also puts the cursor in its message field) | ⌃⌘1, ⌃⌘2, ⌃⌘3 or ⌃⌘4 |
@@ -929,24 +1056,29 @@ conversation.
 
 | Tab | Setting | Result | Default |
 | --- | --- | --- | --- |
-| Accounts | **Status**, **Account**, **CLI** | Shows the sign-in status, the account and plan, and the path and version of the CLI. | — |
+| Accounts | A row for each AI | Shows the status, the account and one button, for example **Use**, **Sign in** or **Set up**. The arrow at the right shows the steps of the [Choose your AI](#choose-your-ai) card. | — |
+| Accounts | **Program** | Shows the path and the version of the CLI. | — |
 | Accounts | Usage rows | Shows how much of each usage window you used, and when the window starts again. | — |
-| Accounts (Claude) | **Log in in Terminal** | Opens Terminal and runs `claude auth login --claudeai`. | — |
+| Accounts (Claude) | **Log in**, **Log in again** | Opens Terminal and runs `claude auth login --claudeai`. | — |
 | Accounts (Claude) | **Verify connection** | Sends one small message with Haiku to test the sign-in. | — |
-| Accounts (ChatGPT) | **Sign in with ChatGPT**, **Use a device code** | Starts the Codex sign-in in the browser, or with a device code. | — |
+| Accounts (ChatGPT, Grok) | **Sign in**, **Use a device code** | Starts the sign-in in the browser, or with a device code. | — |
 | Accounts (ChatGPT) | **Sign out** | Shows the dialog "Sign out of ChatGPT in Lectern?". **Sign Out** in the dialog removes only the Lectern sign-in. Lectern shows this button only in Isolated mode. | — |
+| Accounts (On This Mac) | **Apple Intelligence**, **Ollama** | Shows if Apple Intelligence is ready, and if Ollama is on your Mac and open, with the number of models. | — |
+| Accounts | **Set Up AI…** | Opens the [Choose your AI](#choose-your-ai) window. | — |
 | Models (Claude) | **Model** | Selects the model for your messages. | **Default (your Claude Code setting)** |
 | Models (Claude) | **Reasoning effort** | Selects the reasoning effort. | **Default** |
 | Models (ChatGPT) | **Model** | Selects the model for your messages. | The default model in the model list of Codex |
 | Models (ChatGPT) | **Reasoning effort** | Selects the reasoning effort. | The default effort of that model |
 | Models (ChatGPT) | **Fast tier (≈2.5× usage)** | Uses the priority tier. | Off |
+| Models (Grok) | **Model**, **Reasoning effort** | Selects the model and the reasoning effort for Grok. | The default model of Grok Build |
+| Models (On This Mac) | **Model** | Selects the model on your Mac. | The model that you downloaded last, or Apple Intelligence |
 | Models | **Protect purchased credits** | Asks you before a ChatGPT message can use purchased credits. | On |
 | Advanced (Appearance) | **System**, **Light**, **Dark** | Selects the appearance of all Lectern windows. **System** uses the appearance of macOS. | System |
 | Advanced (Appearance) | **Dark Pages** | Shows the pages with inverted colors. The PDF file does not change. | Off |
 | Advanced (Appearance) | **Chat font** | Sets the font of the messages and the message fields: **System**, **Serif** or **Rounded**. **View > Chat Font** has the same items. | System |
 | Advanced (Appearance) | **Chat text size** | Sets the text size of the messages and the message fields: **Small**, **Medium**, **Large** or **Extra Large**. **View > Chat Text Size** has the same items. | Medium |
-| Advanced (Claude Code CLI, Codex) | **Path override** | Sets the path of the CLI. If it is empty, Lectern finds the CLI automatically (**Auto-detect**). | Empty |
-| Advanced (Claude Code CLI, Codex) | **Detected** | Shows the CLI that Lectern found. **Reveal in Finder** shows it in Finder. | — |
+| Advanced (Claude Code CLI, Codex, Grok) | **Path override** | Sets the path of the CLI. If it is empty, Lectern finds the CLI automatically (**Auto-detect**). | Empty |
+| Advanced (Claude Code CLI, Codex, Grok) | **Detected** | Shows the CLI that Lectern found. **Reveal in Finder** shows it in Finder. | — |
 | Advanced (Codex) | **Codex home** | Selects **Isolated** or **Shared**. Refer to [Select Isolated or Shared](#select-isolated-or-shared-chatgpt). | Isolated |
 | Advanced (Context) | **Current page ± N pages** | Sets the quantity of pages on each side of the current page that Lectern sends (0 to 3). | ± 1 page |
 | Advanced (Conversations) | **AI conversation titles** | After the first answer, the provider gives the conversation a title with a small model. If it is off, Lectern makes the title from the first question. | On |
@@ -958,6 +1090,8 @@ conversation.
 - Lectern does not send the PDF file. It gets the text from the PDF on your Mac with PDFKit. It sends only the
   applicable pages to the provider that you selected. If a message has a page image, Lectern also sends that image.
 - Lectern does OCR on your Mac with the Vision framework of macOS. It does not send scanned pages to an OCR service.
+- With **On This Mac**, Lectern sends the pages only to Apple Intelligence or to Ollama on your Mac
+  (`127.0.0.1:11434`). Nothing goes out of your Mac.
 - For a normal message, Lectern runs Claude with `--safe-mode` and with no tools. Lectern runs Codex in a read-only
   sandbox. Lectern gives the answer "no" to all approval requests. Because of this, Codex cannot change files.
 - For a skill message, the provider can use tools and the internet. It can read the PDF and the text of all pages.
@@ -977,6 +1111,7 @@ conversation.
 - Lectern never signs you out of Claude. A Claude sign-out also signs you out of Claude Code in Terminal.
 - For ChatGPT, **Sign out** in Settings removes only the Lectern sign-in (Isolated mode). The ChatGPT app and the
   Codex CLI stay signed in.
+- Lectern never signs you out of Grok. Grok Build keeps its sign-in in `~/.grok`, and Lectern does not read it.
 
 ### Remove all conversations
 
@@ -1175,8 +1310,8 @@ Optional: to also remove the conversations, the settings and the separate ChatGP
 
 These commands do not remove the files of your skill messages in `~/Documents/Lectern Output`.
 
-Claude Code and Codex are separate programs, with separate sign-ins and history. If you do not use one of these
-programs, you can remove it. The setup guide of each program tells you how to remove it.
+Claude Code, Codex, Grok Build and Ollama are separate programs, with separate sign-ins and history. If you do not
+use one of these programs, you can remove it. The setup guide of each program tells you how to remove it.
 
 ## For developers
 

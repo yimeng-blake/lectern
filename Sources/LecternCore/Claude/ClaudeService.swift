@@ -17,6 +17,8 @@ public final class ClaudeService: ProviderService {
     public private(set) var planName: String?
     /// Method of the login in progress; nil when none is running.
     public private(set) var loginMethod: LoginMethod?
+    /// One-click install of Claude Code (`install()`).
+    public private(set) var setupState: SetupState = .idle
 
     /// Bumped after every successful login. Sessions respawn when it changes, so a process still
     /// holding the old (revoked) token never serves another turn.
@@ -61,6 +63,21 @@ public final class ClaudeService: ProviderService {
     public func relocateBinary() {
         locate()
         refreshAuth()
+    }
+
+    /// Anthropic's official installer (`curl -fsSL https://claude.ai/install.sh | bash`, the native build into
+    /// ~/.local/bin), only from an explicit click; then re-runs discovery.
+    public func install() async {
+        if case .running = setupState { return }
+        setupState = .running("Installing Claude Code…")
+        let result = await OfficialInstaller.run(OfficialInstaller.claudeCommand, environment: [:])
+        relocateBinary()
+        switch result {
+        case .success:
+            setupState = installIssue.map { .failed("Claude Code was installed, but Lectern can't find it. \($0)") } ?? .done
+        case .failure(let error):
+            setupState = .failed(error.message)
+        }
     }
 
     private func locate() {

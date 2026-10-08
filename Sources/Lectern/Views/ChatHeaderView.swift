@@ -16,10 +16,16 @@ struct ChatHeaderView: View {
 
     private var resolvedModel: String? {
         guard let resolved = model.resolvedModel, !resolved.isEmpty else { return nil }
-        return resolved
+        return model.modelLabel(resolved, for: model.provider)
     }
 
+    /// On This Mac models have no reasoning efforts, so there is nothing to pick.
+    private var showsEffort: Bool { model.provider != .local || !model.effortChoices.isEmpty }
+
     private var offersFastTier: Bool { model.provider == .codex && model.selectedModel?.fastTierId != nil }
+
+    /// The chip says "Not set up" (not "Signed out") when there is nothing to sign in to yet.
+    private var notSetUp: Bool { setupStatus(model.provider) == .setUp }
 
     var body: some View {
         Group {
@@ -27,7 +33,7 @@ struct ChatHeaderView: View {
                 HStack(spacing: 8) {
                     settingsMenu
                     Spacer(minLength: 4)
-                    AccountDot(state: model.authState, quota: quota)
+                    AccountDot(state: model.authState, notSetUp: notSetUp, quota: quota)
                     newChatButton
                 }
             } else {
@@ -46,7 +52,7 @@ struct ChatHeaderView: View {
                     HStack(spacing: 10) {
                         providerMenu
                         modelMenu
-                        effortMenu
+                        if showsEffort { effortMenu }
                         if offersFastTier { fastToggle }
                     }
                     settingsMenu
@@ -56,7 +62,7 @@ struct ChatHeaderView: View {
             }
 
             HStack(spacing: 6) {
-                AccountChip(state: model.authState)
+                AccountChip(state: model.authState, notSetUp: notSetUp)
                     .layoutPriority(-1)
                 if let quota {
                     QuotaChip(quota: quota)
@@ -105,7 +111,9 @@ struct ChatHeaderView: View {
         Menu {
             Section("Provider") { providerItems }
             Section("Model") { modelItems }
-            Section("Reasoning Effort") { effortItems }
+            if showsEffort {
+                Section("Reasoning Effort") { effortItems }
+            }
             if offersFastTier {
                 Section {
                     Toggle("Fast (Priority Tier)", isOn: fastBinding)
@@ -145,30 +153,49 @@ struct ChatHeaderView: View {
         .accessibilityLabel("Provider: \(model.provider.displayName)")
     }
 
+    /// All four providers with a status dot, then "Set Up …" for each one that can't answer yet (opens
+    /// the "Choose your AI" window on its card).
     @ViewBuilder private var providerItems: some View {
         ForEach(Provider.allCases) { provider in
             Toggle(isOn: Binding(
                 get: { model.provider == provider },
                 set: { if $0 { model.provider = provider } }
             )) {
+                Image(nsImage: StatusDot.image(setupStatus(provider)))
                 Text(provider.displayName)
                 Text(providerStatus(provider))
             }
         }
+        let notReady = Provider.setupOrder.filter { !setupStatus($0).isReady }
+        if !notReady.isEmpty {
+            Divider()
+            ForEach(notReady) { provider in
+                Button("Set Up \(provider.displayName)\u{2026}") { SetupWindow.shared.show(focus: provider) }
+            }
+        }
     }
 
-    /// Menu subtitle, e.g. "Signed in · Max", "Signed out", "Answering…".
+    private func setupStatus(_ provider: Provider) -> SetupStatus {
+        .make(provider, auth: model.authState(for: provider), installIssue: model.installIssue(for: provider))
+    }
+
+    /// Menu subtitle, e.g. "Signed in · Max", "Not set up", "Answering…".
     private func providerStatus(_ provider: Provider) -> String {
         if model.isBusy(provider) { return "Answering…" }
-        switch model.authState(for: provider) {
-        case .signedIn(let account):
-            if let plan = account.components(separatedBy: " · ").last, plan != account { return "Signed in · \(plan)" }
+        let status = setupStatus(provider)
+        switch status {
+        case .ready:
+            guard provider != .local, case .signedIn(let account) = model.authState(for: provider) else {
+                return "Ready"
+            }
+            if let plan = account.components(separatedBy: " · ").last, plan != account {
+                return "Signed in · \(plan)"
+            }
             return "Signed in"
-        case .signedOut: return "Signed out"
-        case .failed: return "Sign-in problem"
-        case .checking: return "Checking…"
-        case .loggingIn: return "Signing in…"
-        case .unknown: return ""
+        case .signIn: return "Signed out"
+        case .unavailable:
+            return provider == .local ? "Unavailable" : "Sign-in problem"
+        case .setUp, .busy: return status.title
         }
     }
 
@@ -321,7 +348,8 @@ struct ChatHeaderView: View {
 
 /// What the account chip and dot say about a sign-in state.
 private enum AccountStatus {
-    static func text(_ state: AuthState) -> String {
+    static func text(_ state: AuthState, notSetUp: Bool = false) -> String {
+        if notSetUp { return "Not set up" }
         switch state {
         case .signedIn(let account): return account.isEmpty ? "Signed in" : account
         case .signedOut: return "Signed out"
@@ -339,7 +367,11 @@ private enum AccountStatus {
         return account.split(separator: "@").first.map(String.init)
     }
 
-    static func help(_ state: AuthState) -> String {
+    static func help(_ state: AuthState, notSetUp: Bool = false) -> String {
+        if notSetUp {
+            if case .signedOut(let reason) = state, !reason.isEmpty { return reason }
+            return "Not set up yet. Click for account settings."
+        }
         switch state {
         case .signedIn(let account): return "Signed in as \(account). Click for account settings."
         case .signedOut(let reason): return reason
@@ -354,8 +386,17 @@ private enum AccountStatus {
 @MainActor
 private struct AccountIndicator: View {
     let state: AuthState
+    var notSetUp = false
 
     var body: some View {
+        if notSetUp {
+            Circle().fill(.secondary.opacity(0.5)).frame(width: 8, height: 8)
+        } else {
+            indicator
+        }
+    }
+
+    @ViewBuilder private var indicator: some View {
         switch state {
         case .checking, .loggingIn:
             ProgressView()
@@ -376,28 +417,29 @@ private struct AccountIndicator: View {
 @MainActor
 private struct AccountChip: View {
     let state: AuthState
+    let notSetUp: Bool
 
     var body: some View {
         SettingsLink {
             // Narrow panes get progressively shorter labels instead of an unreadable "r…x".
             ViewThatFits(in: .horizontal) {
-                chip(Text(AccountStatus.text(state)))
-                chip(Text(AccountStatus.text(state)).lineLimit(1).truncationMode(.middle)
+                chip(Text(AccountStatus.text(state, notSetUp: notSetUp)))
+                chip(Text(AccountStatus.text(state, notSetUp: notSetUp)).lineLimit(1).truncationMode(.middle)
                     .frame(width: 130, alignment: .leading))
                 if let short = AccountStatus.shortText(state) { chip(Text(short)) }
                 chip(EmptyView())
             }
         }
         .buttonStyle(.plain)
-        .help(AccountStatus.help(state))
+        .help(AccountStatus.help(state, notSetUp: notSetUp))
         // Narrow panes show only the dot, so the state must be spoken.
-        .accessibilityLabel("Account: \(AccountStatus.text(state))")
-        .accessibilityHint(AccountStatus.help(state))
+        .accessibilityLabel("Account: \(AccountStatus.text(state, notSetUp: notSetUp))")
+        .accessibilityHint(AccountStatus.help(state, notSetUp: notSetUp))
     }
 
     private func chip(_ label: some View) -> some View {
         HStack(spacing: 6) {
-            AccountIndicator(state: state)
+            AccountIndicator(state: state, notSetUp: notSetUp)
             label
         }
         .font(.callout)
@@ -415,12 +457,13 @@ private struct AccountChip: View {
 @MainActor
 private struct AccountDot: View {
     let state: AuthState
+    let notSetUp: Bool
     let quota: QuotaSnapshot?
 
     var body: some View {
         SettingsLink {
             HStack(spacing: 5) {
-                AccountIndicator(state: state)
+                AccountIndicator(state: state, notSetUp: notSetUp)
                 if let quota {
                     Text(QuotaChip.highest(quota))
                         .font(.callout.monospacedDigit())
@@ -434,12 +477,12 @@ private struct AccountDot: View {
         }
         .buttonStyle(.plain)
         .help(tooltip)
-        .accessibilityLabel("Account: \(AccountStatus.text(state))")
+        .accessibilityLabel("Account: \(AccountStatus.text(state, notSetUp: notSetUp))")
         .accessibilityHint(tooltip)
     }
 
     private var tooltip: String {
-        var lines = [AccountStatus.text(state)]
+        var lines = [AccountStatus.text(state, notSetUp: notSetUp)]
         if let quota { lines.append(QuotaChip.tooltip(quota)) }
         lines.append("Click for account settings.")
         return lines.joined(separator: "\n")

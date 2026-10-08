@@ -3,7 +3,8 @@ import LecternCore
 import SwiftUI
 
 /// The one banner above the transcript: install problems, sign-in, the credits guard, warnings —
-/// in that priority order. Logins only ever start from these buttons.
+/// in that priority order. Logins only ever start from these buttons. "Set Up…" opens the
+/// "Choose your AI" window on the provider's card (installations and model downloads start there).
 @MainActor
 struct AuthBannerView: View {
     let model: ChatModel
@@ -50,8 +51,22 @@ struct AuthBannerView: View {
         case .installIssue(let issue):
             BannerBox(tint: .orange, systemImage: "exclamationmark.triangle.fill") {
                 message(issue)
-                HStack {
-                    SettingsLink { Text("Open Settings") }
+                ButtonRow {
+                    setUpButton(prominent: true)
+                    if model.provider != .local {
+                        // A path override for a CLI in an unusual place.
+                        SettingsLink { Text("Open Settings") }
+                    }
+                }
+            }
+
+        case .signedOut(let reason) where model.provider == .local:
+            // Nothing to sign in to: no model is ready on this Mac yet.
+            BannerBox(tint: .orange, systemImage: "laptopcomputer.trianglebadge.exclamationmark") {
+                message(reason)
+                ButtonRow {
+                    setUpButton(prominent: true)
+                    Button("Check again") { model.recheckAuth() }
                 }
             }
 
@@ -141,7 +156,8 @@ struct AuthBannerView: View {
     }
 
     /// Claude: only the Terminal login (Claude Code's own `claude auth login`; Lectern doesn't offer
-    /// Claude.ai login in-app). ChatGPT: Codex's browser sign-in plus its device-code alternative.
+    /// Claude.ai login in-app). ChatGPT and Grok: the browser sign-in plus the device-code alternative.
+    /// On This Mac has no sign-in: "Set Up…".
     @ViewBuilder
     private func loginButtons(prominent: Bool = true) -> some View {
         switch model.provider {
@@ -152,6 +168,24 @@ struct AuthBannerView: View {
             loginButton("Sign in with ChatGPT", method: .browser, prominent: prominent)
             Button("Use a device code") { model.startLogin(.deviceCode) }
                 .help("Shows a code to enter on the ChatGPT sign-in page")
+        case .grok:
+            loginButton("Sign in with Grok", method: .browser, prominent: prominent)
+            Button("Use a device code") { model.startLogin(.deviceCode) }
+                .help("Shows a code to enter on the Grok sign-in page")
+        case .local:
+            setUpButton(prominent: prominent)
+        }
+    }
+
+    /// Opens "Choose your AI" on this provider's card.
+    @ViewBuilder
+    private func setUpButton(prominent: Bool) -> some View {
+        let title = model.provider == .local ? "Set Up\u{2026}" : "Set Up \(model.provider.displayName)\u{2026}"
+        if prominent {
+            Button(title) { SetupWindow.shared.show(focus: model.provider) }
+                .buttonStyle(.borderedProminent)
+        } else {
+            Button(title) { SetupWindow.shared.show(focus: model.provider) }
         }
     }
 

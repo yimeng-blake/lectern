@@ -20,6 +20,7 @@ struct LecternApp: App {
     }
 }
 
+/// Lectern menu: Set Up AI… (the "Choose your AI" window).
 /// File menu: Open…, Open Recent, New Conversation, Go to Conversation (⌃⌘1–4), Close, Close
 /// Conversation, Export Highlights… and Print… (there is nothing to save);
 /// Edit > Find, Ask Lectern, Highlight Selection and Add Note…; the viewer's View items; the Go menu.
@@ -41,6 +42,10 @@ struct ReaderCommands: Commands {
     private var conversations: ConversationStack? { reader == nil ? nil : windows.activeConversations }
 
     var body: some Commands {
+        // Lectern menu, after Settings…: the "Choose your AI" window.
+        CommandGroup(after: .appSettings) {
+            Button("Set Up AI\u{2026}") { SetupWindow.shared.show() }
+        }
         CommandGroup(replacing: .newItem) {
             Button("Open\u{2026}") { windows.showOpenPanel() }
                 .keyboardShortcut("o")
@@ -291,10 +296,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppServices.shared.settings.applyAppearance()
         AppServices.shared.start()
-        // Finder's open-document events can arrive just after launch. Only when none brought a window,
-        // show the Open panel, as Preview does.
+        // Finder's open-document events can arrive just after launch. The first time (or when no AI is
+        // ready), "Choose your AI" comes first; otherwise, when no event brought a window, the Open panel,
+        // as Preview does. Closing "Choose your AI" offers the Open panel.
         Task {
             try? await Task.sleep(for: .milliseconds(500))
+            if await SetupWindow.shared.showAtLaunchIfNeeded() { return }
             ReaderWindowManager.shared.showOpenPanelIfIdle()
         }
     }

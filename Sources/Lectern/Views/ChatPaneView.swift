@@ -456,6 +456,8 @@ private struct SkillPicker: View {
             return "No skills found. Lectern looks in ~/.claude/skills, in your Claude Code plugins and in the Claude app's skills."
         case .codex:
             return "No skills found. Lectern shows the skills that Codex reports, including ~/.codex/skills."
+        case .grok, .local:
+            return "Skills aren't available for \(model.provider.displayName) yet."
         }
     }
 }

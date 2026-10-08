@@ -1,16 +1,25 @@
 # Lectern design
 
-Lectern is a personal macOS PDF reader with a side-by-side chat pane. It talks to Claude and ChatGPT
-through the official first-party harnesses, using each user's own subscriptions:
+Lectern is a personal macOS PDF reader with a side-by-side chat pane. It talks to four providers, the
+first three through the official first-party harnesses with each user's own account:
 
 - **Claude** — Claude Code CLI (`claude -p`, stream-json), logged in with the user's own Claude plan.
 - **ChatGPT** — Codex `app-server` (JSON-RPC over stdio), logged in with ChatGPT. This is the same
   harness ChatGPT.app runs internally.
+- **Grok** — xAI's Grok Build CLI (`grok -p … --output-format streaming-json`), signed in with the
+  user's X / Grok account (a free account works).
+- **On This Mac** — no account: Apple's on-device model (FoundationModels, macOS 26+) or a local
+  Ollama model over its HTTP API on 127.0.0.1.
+
+A "Choose your AI" window (first launch, Lectern > Set Up AI…) sets these up without Terminal: one-click
+official installers for Claude Code and Grok, links to the ChatGPT app and Ollama, in-app sign-in, and
+Ollama model downloads.
 
 The app never touches stored credentials. Logins always complete through the vendors' own flows,
 triggered only when the user asks: for Claude, the user runs the unmodified `claude auth login` in
 Terminal (Lectern doesn't offer Claude.ai login inside the app, per Anthropic's policy for third-party
-apps); for ChatGPT, Codex app-server's own `account/login/start`.
+apps); for ChatGPT, Codex app-server's own `account/login/start`; for Grok, the CLI's own
+`grok login --oauth` / `--device-auth`. Lectern never reads `~/.grok/auth.json` or any other credential file.
 
 Build: SwiftPM, tools version 5.10 (only ever built with Swift 6.3 from the Command Line Tools and
 the macOS 26 SDK; older toolchains and running on macOS 14/15 are untested), Swift 5 language mode,
@@ -35,6 +44,7 @@ Sources/LecternCore/Shared/ConversationTitler.swift (titler) fallback + model co
 Sources/lectern-probe/Probe.swift               (fixed) dispatcher (`@main`; SwiftPM compiles a file named
                                                         main.swift as top-level code, so it can't hold `@main`);
                                                         calls claudeProbeCommands(), codexProbeCommands(),
+                                                        grokProbeCommands(), localProbeCommands(),
                                                         contextProbeCommands(), e2eProbeCommands()
 Sources/lectern-probe/ProbeE2E.swift            (integrator) `ask`: ReaderDocument → ContextBuilder → session,
                                                         with ChatModel's sign-in gate and credits guard;
@@ -44,6 +54,15 @@ Sources/LecternCore/Claude/*                    (Claude agent)  ClaudeService, C
 Sources/lectern-probe/ProbeClaude.swift         (Claude agent)  func claudeProbeCommands() -> [ProbeCommand]
 Sources/LecternCore/Codex/*                     (Codex agent)   CodexAppServer, CodexService, CodexSession
 Sources/lectern-probe/ProbeCodex.swift          (Codex agent)   func codexProbeCommands() -> [ProbeCommand]
+Sources/LecternCore/Shared/OfficialInstaller.swift (Grok agent) SetupState, OfficialInstaller (vendor install commands)
+Sources/LecternCore/Grok/*                      (Grok agent)    GrokProtocol, GrokService, GrokSession
+Sources/lectern-probe/ProbeGrok.swift           (Grok agent)    grok-status/-ask/-login-dryrun/-replay/-selftest,
+                                                                installer-run
+Sources/LecternCore/Local/*                     (Local agent)   LocalService, LocalSession, OllamaClient
+                                                                (+ LocalModelLimits), AppleModel, LocalPrompt
+Sources/lectern-probe/ProbeLocal.swift          (Local agent)   local-status, local-ask, local-pull
+Sources/Lectern/Views/Setup/*                   (Setup UI agent) SetupModel + SetupWindow, ChooseAIView,
+                                                                SetupFlowView, SetupComponents
 Sources/LecternCore/Document/*                  (Document agent) ReaderDocument, ContextBuilder, OCR, TableDetector,
                                                         CitationVerifier, PassageLocator
 Sources/LecternCore/Document/CitationTypes.swift (fixed) CitationCheck
@@ -144,11 +163,11 @@ enum ConversationTag: Int, CaseIterable, Codable { case blue, green, orange, pur
     var isMaximized: Bool { get }
     var chatTextSize: ChatTextSize { get }  // the app setting
     func toggleMaximize()
-    var isAnyBusy: Bool { get }             // a turn runs for either provider
+    var isAnyBusy: Bool { get }             // a turn runs for any provider
     var hasUserMessages: Bool { get }
     var stored: StoredConversation { get }  // what the stack saves
     func rename(_ title: String)            // trimmed, one line, ≤ 80 chars; empty → back to the automatic title
-    func clearConversation()                // panel menu "New Chat": both providers start over; a custom title stays
+    func clearConversation()                // panel menu "New Chat": every provider starts over; a custom title stays
     func takeFocus()                        // stack.focus(id): input focus, a click in the panel, a preset
     func requestInputFocus()                // new conversation: its input takes the keyboard focus
 
@@ -160,7 +179,9 @@ enum ConversationTag: Int, CaseIterable, Codable { case blue, green, orange, pur
     var authState: AuthState { get }        // for `provider`
     var quota: QuotaSnapshot? { get }       // for `provider`
     var installIssue: String? { get }       // for `provider`
+    func installIssue(for p: Provider) -> String?   // any provider (provider picker)
     var resolvedModel: String? { get }      // last model reported by the backend for `provider`
+    func modelLabel(_ id: String, for p: Provider) -> String   // On This Mac ids → catalog names
 
     var messages: [ChatMessage] { get }     // all providers, in order; each tagged with its provider
     var isBusy: Bool { get }                // a turn is running for `provider`
@@ -245,6 +266,53 @@ public enum CodexHomeMode: String, Codable, CaseIterable, Sendable { case isolat
     public func oneShot(prompt: String, model: String, timeout: TimeInterval = 20) async -> String?
                                                     // result text; nil on is_error, timeout or bad output;
                                                     // never markAuthExpired
+    public var setupState: SetupState { get }       // the one-click install (Choose your AI)
+    public func install() async                     // OfficialInstaller.claudeCommand, then relocateBinary();
+                                                    // .failed when no binary is found afterwards
+}
+
+public enum SetupState: Equatable, Sendable { case idle, running(String), done, failed(String) }
+public enum OfficialInstaller {                     // Shared/OfficialInstaller.swift; only from a user click
+    public static let claudeCommand: String         // curl -fsSL https://claude.ai/install.sh | bash
+    public static let grokCommand: String           // curl -fsSL https://x.ai/cli/install.sh | bash
+    public static func run(_ command: String, environment: [String: String]) async -> Result<Void, BackendError>
+                                                    // /bin/bash -o pipefail -c, clean env + extras, cwd = home,
+                                                    // 15 min timeout; failure = .notInstalled + last 6 log lines
+}
+
+@MainActor @Observable public final class GrokService: ProviderService {   // Grok/GrokService.swift
+    public init(pathOverride: @escaping @MainActor () -> String?)
+    public var binaryPath: String? { get }
+    public var setupState: SetupState { get }
+    public var accountLabel: String? { get }
+    public var loginMethod: LoginMethod? { get }
+    public func install() async                     // OfficialInstaller.grokCommand, then relocateBinary()
+    public func relocateBinary()                    // after the Settings path override changes
+    // startLogin(.browser/.terminal) → `grok login --oauth`; .deviceCode → `grok login --device-auth`
+    // (LoginProgress.url host must be x.ai / grok.com; userCode for the device flow). The CLI opens
+    // the browser itself, so the app doesn't open a second tab.
+}
+
+@MainActor @Observable public final class LocalService: ProviderService {  // Local/LocalService.swift
+    public init()                                   // (+ init(ollamaURL:) for the probe)
+    public enum AppleStatus { case available, unavailable(String), unsupported }
+    public enum OllamaStatus { case notInstalled, notRunning, ready(models: [String]) }
+    public var appleStatus: AppleStatus { get }
+    public var ollamaStatus: OllamaStatus { get }
+    public struct Suggestion: Identifiable, Hashable { id, title, size, note }
+    public static var suggestions: [Suggestion] { get }   // the one that fits this Mac's memory first
+    public var download: (model: String, progress: Double, status: String)? { get }   // current /api/pull
+    public var downloadError: String? { get }
+    public var canOpenOllama: Bool { get }
+    public var defaultModelId: String? { get }
+    public func downloadModel(_ name: String) async -> Bool
+    public func cancelDownload()
+    public func openOllamaDownloadPage()            // https://ollama.com/download
+    public func openOllama()                        // Ollama.app in the background, waits ≤ 30 s for its server
+    public func refresh() async
+    // models: "apple.on-device" ("Apple Intelligence (on device)") when available + "ollama:<name>" per
+    // installed chat model; no efforts. authState .signedIn("On this Mac") when any model is usable,
+    // otherwise .signedOut(plain reason). installIssue is always nil (a question waits for a model).
 }
 
 @MainActor @Observable public final class CodexService: ProviderService {
@@ -277,6 +345,7 @@ public enum ConversationTitler {                    // Shared/ConversationTitler
     /// (Codex) when the purchased-credits check doesn't return .available / .notApplicable.
     @MainActor public static func title(question: String, answer: String, provider: Provider,
                                         claude: ClaudeService, codex: CodexService) async -> String?
+                                                    // Grok and On This Mac: nil (fallback title) for now
 }
 ```
 
@@ -721,14 +790,20 @@ were verified against 0.159.2.
   build-app.sh copies `web/` to Contents/Resources/web and the app loads
   `Bundle.main.url(forResource: "chat", withExtension: "html", subdirectory: "web")`. Unbundled
   `swift run Lectern` falls back to the source tree, found by walking up from the executable.
-- `AppServices` (@MainActor singleton): SettingsStore, ClaudeService, CodexService, SessionStore.
+- `AppServices` (@MainActor singleton): SettingsStore, ClaudeService, CodexService, GrokService,
+  LocalService, SessionStore. `isReady(p)` = no installIssue and signed in; `anyProviderReady`;
+  `isCheckingStatus` (a launch check hasn't answered). A grokPathOverride change re-runs
+  `grok.relocateBinary()` after 800 ms; quitting cancels a model download.
 - SettingsStore (UserDefaults): per-provider default TurnSettings (Claude: model "", effort "";
   Codex: model = catalog default, effort = its default, fastTier false), protectCredits (true),
-  codexHomeMode ("isolated"), claudePathOverride, codexPathOverride, neighborRadius (1), lastProvider,
-  aiConversationTitles (true), chatTextSize ("medium").
+  codexHomeMode ("isolated"), claudePathOverride, codexPathOverride, grokPathOverride, setupShown
+  (false until "Choose your AI" was shown), neighborRadius (1), lastProvider, aiConversationTitles
+  (true), chatTextSize ("medium"). `ModelCatalog.resolve`: a saved Codex or On This Mac model missing
+  from the catalog falls back to the catalog default; Claude and Grok keep any saved id.
 - SessionStore: `AppPaths.sessions/<contentHash>.json`, version 2 =
   `{version: 2, conversations: [StoredConversation], focusedID, viewer}` with StoredConversation =
-  `{id, title, titleIsCustom, provider?, claudeSessionId?, codexThreadId?, messages, collapsed, colorTag?}`
+  `{id, title, titleIsCustom, provider?, claudeSessionId?, codexThreadId?, grokSessionId?, messages, collapsed,
+  colorTag?}` (On This Mac conversations are memory-only: no id, so a relaunch starts a new one)
   (colorTag 0–3; files without it get colors by order), in grid order. Conversation ids saved only after
   a turn completes; saved after each turn and each stack change.
   A reopened document starts with fresh ContextBuilders (all context re-sent once). Decoding is lenient
@@ -739,6 +814,9 @@ were verified against 0.159.2.
   conversations: a downgrade loses them (GUIDE says so).
 - `.conversationReset` from a session → reset that provider's ContextBuilder; if it ended a sent turn,
   drop the placeholder reply and re-queue the question first (its prompt is rebuilt with full context).
+  For On This Mac the notice says the conversation got too long for the model (its windows are 4K–32K).
+- On This Mac model ids show their catalog names (`ChatModel.modelLabel`: "gemma4:26b", "Apple
+  Intelligence (on device)") in the reply header and the chat header; the effort picker is hidden.
 - `.interrupted` with no answer text → `ContextBuilder.discard` that prompt (it may never have been
   delivered). Stop timeout → the replacement session resumes `conversationIds[p]`, else reset the builder.
 - Two windows on the same bytes (same contentHash; a copy at another path, since the same file only
@@ -750,7 +828,9 @@ were verified against 0.159.2.
 - Encrypted PDFs: DocumentWindow asks for the password (SecureField) and calls `unlock(password:)`
   before creating the reader; PDFView's own prompt would unlock only the UI copy.
 - Banner: `.signedOut` → Claude: "Log in in Terminal" + "Check again" (for a login done in the
-  user's own terminal); ChatGPT: "Sign in with ChatGPT" + "Use a device code". `.failed` → "Check
+  user's own terminal); ChatGPT: "Sign in with ChatGPT" + "Use a device code"; Grok: "Sign in with
+  Grok" + "Use a device code"; On This Mac: its plain status + "Set Up…" / "Check again". An install
+  issue → "Set Up <name>…" (opens Choose your AI on that card). `.failed` → "Check
   again" (recheckAuth) first, login buttons secondary. Codex: a cancelled sign-in whose previous state was not
   signedIn/signedOut re-reads the account instead of declaring signed out.
 - ChatModel send flow:
@@ -765,11 +845,88 @@ were verified against 0.159.2.
   4. ContextBuilder (per provider) builds the prompt; session.send(request, settings).
   5. Events update the assistant message; `.failed(.authRequired)` → message status
      `.waitingForLogin` (retry the same user message automatically after login).
-- Settings window tabs: **Accounts** (per provider: status, account; Claude: Log in in Terminal /
-  Verify connection; ChatGPT: Sign in with ChatGPT / device code / Sign out (isolated only); quota), **Models** (defaults,
+- Settings window tabs: **Accounts** (the setup cards as compact rows that open inline, plus per-provider
+  details: Claude: Log in in Terminal / Verify connection; ChatGPT: Sign in with ChatGPT / device code /
+  Sign out (isolated only); quota), **Models** (defaults incl. Grok and On This Mac,
   fast tier toggle with "uses ~2.5× your included usage", protect-credits toggle), **Advanced**
   (Appearance incl. chat text size, binary path overrides with detected path shown, Codex home mode,
   context radius, Conversations: "AI conversation titles").
+
+## Choose your AI (Views/Setup)
+
+- `SetupWindow` (AppKit NSWindow, 680×560 content, transparent title bar, not restorable, no tabs) hosts
+  `ChooseAIView(model: SetupModel.shared)`. Shown on first launch (`setupShown` false; it is set on
+  show), at later launches only when no provider is ready after the status checks (≤ 4 s) and no reader
+  window is open, from Lectern > Set Up AI…, from the provider picker's "Set Up <name>…" items and from
+  the banners. Closing it: if the provider for new conversations isn't ready, `lastProvider` becomes
+  the first ready one; with no other window, the Open panel follows.
+- Grid of four cards (order: On This Mac, ChatGPT, Claude, Grok): tinted SF Symbol tile, name, tagline
+  or account, a status pill (`SetupStatus`: Ready / Not signed in / Not set up / Unavailable / busy text)
+  and one button (`SetupModel.primaryAction`: Use, Sign in / Log in, Set up, Download a model, Try again,
+  Cancel; "In use" when new conversations already use it). A click opens the card in place
+  (matchedGeometryEffect spring); the others become tiles; × or Esc goes back.
+- Flows (`SetupFlowView`, shared with Settings > Accounts): Claude: Set up (ClaudeService.install) →
+  Log in (Terminal) / Check again. ChatGPT: missing Codex → "Get the ChatGPT app" (chatgpt.com/download;
+  re-checked when Lectern becomes active) → Sign in with ChatGPT / device code. Grok: Set up
+  (GrokService.install; the note says the installer edits the shell's settings file) → Sign in with Grok /
+  device code (big monospaced code + Copy + "Open the sign-in page"). On This Mac: Apple Intelligence
+  line, "Use On This Mac" once a model is ready, then Ollama: Get Ollama / Open Ollama
+  (LocalService.openOllama) / model list for new conversations + suggested downloads with progress and
+  Cancel (a finished download becomes the default local model).
+- Main buttons use `SetupProminentButtonStyle` (accent capsule): `.borderedProminent` at large size
+  draws white text on a near-white fill while the window isn't key, which hid "Set up" exactly when the
+  user comes back from the browser. Logins, installs and downloads start only from clicks.
+- Provider picker: all four providers with a colored status dot (non-template NSImage, since AppKit
+  menus draw SwiftUI images as templates) and a subtitle; the account chip says "Not set up" for an
+  install issue.
+
+## Grok backend (verified signed out, Grok CLI 1.0.46)
+
+- Binary: `~/.grok/bin/grok`, `~/.local/bin/grok`, `/opt/homebrew/bin/grok`, `/usr/local/bin/grok`, npm's
+  `@xai-official/grok/bin/grok-native` (Node launchers rejected); Settings override first.
+- Status: `grok models` (no model call): "You are not authenticated." / "You are logged in with …",
+  then the default model and the list. Models: "Default (X)" + the listed ids; efforts low/medium/high.
+- One process per turn: `grok --prompt-file <cache>/grok-turns/<id>.json` (ACP content blocks, so page
+  images fit) `--output-format streaming-json --verbatim --system-prompt-override <ReaderPrompt>
+  --tools todo_write --disallowed-tools todo_write,run_terminal_cmd,read_file,list_dir,grep,search_replace,
+  write_file,web_search,web_fetch,task,Agent --deny * --permission-mode dontAsk --disable-web-search
+  --no-subagents --no-plan --max-turns 3 --no-auto-update --cwd <appSupport>/grok-cwd (empty)
+  [-m M] [--effort E] (-s uuid | -r uuid)`. read_file/list_dir/grep/web_search run unprompted in every
+  permission mode, hence the empty tool set. Clean env + `GROK_MEMORY=0`, `GROK_SUBAGENTS=0`,
+  `GROK_DISABLE_AUTOUPDATER=1`, `GROK_BACKEND_SEARCH=0`, `GROK_WEB_FETCH=0`, `GROK_WRITE_FILE=0`,
+  `GROK_ASK_USER_QUESTION=0`, `GROK_TELEMETRY_TRACE_UPLOAD=0` (traces hold document text) and every
+  `GROK_CLAUDE_*` / `GROK_CURSOR_*` switch 0 (by default Grok loads ~/.claude CLAUDE.md, rules, skills,
+  hooks and MCP servers).
+- Sessions: `-s <uuid>` first, `-r` after output; "already in use" → rerun with `-r`; "No session found"
+  → `.conversationReset`. Stop = SIGTERM (5 s watchdog). NDJSON text/thought/tool_call/usage/end/error →
+  exactly one terminal event; "Not signed in" → authRequired (not sticky), 401/expired → sticky until a
+  sign-in or a good turn; usage-limit wording → `.usageLimit`.
+- Not verified signed in (needs the owner's account): a real streamed answer, the signed-in `grok
+  models` wording, that the tool lock-down refuses calls and that the compat switches stop ~/.claude
+  loading.
+
+## On This Mac backend (Local/*)
+
+- Apple: `SystemLanguageModel.default.availability` → available / unavailable(plain reason: Apple
+  Intelligence off, model downloading) / unsupported (device not eligible, or no FoundationModels).
+  All FoundationModels code is inside `#if canImport(FoundationModels)` + `@available(macOS 26.0, *)`,
+  so the macOS 14/15 SDKs (CI) compile it out and the framework is weak-linked on newer SDKs. One
+  `LanguageModelSession` per conversation (short instructions, `.permissiveContentTransformations`
+  guardrails), `streamResponse` with ≤ 900 answer tokens; context overflow with history →
+  `.conversationReset`, on a fresh session one retry with a smaller prompt; page images skipped with a
+  warning. Never Apple's `fm` CLI (its notice forbids programmatic use).
+- Ollama (127.0.0.1:11434): `/api/version`, `/api/tags`, `/api/show` (cached: capabilities, context
+  length; cloud and embedding-only models filtered out), `/api/chat` streamed with the session's
+  messages, `options.num_ctx` by memory (8K/16K/32K, capped at the model's window), `num_predict`,
+  `keep_alive` 10m, `think:false` for thinking models (a leading `<think>` block is hidden otherwise),
+  images only to vision models; `/api/pull` streamed for downloads (cancellable).
+- Budget: `ContextBuilder.defaultTokenBudget(.local)` → `LocalModelLimits.contextBudget(model)`: 2,000
+  tokens for Apple, 40% of num_ctx for Ollama; token estimates ×1.4 (they ran 15–35% low on page text).
+  LocalPrompt trims a long outline first, then the farthest pages, then the current page; the question
+  stays whole and a warning says text was left out.
+- Default model: the newest installed Ollama model that fits in 60% of memory, else Apple's. While
+  nothing works the service re-checks every 5 s for 2 minutes after a click, then every 30 s.
+- Not verified: the Apple answer path (Apple Intelligence is off on the dev Mac).
 
 ## Conversations (chat panels in a grid)
 

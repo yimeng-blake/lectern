@@ -51,6 +51,9 @@ private func e2eAsk(_ args: [String]) async -> Int32 {
     let service: ProviderService
     var codex: CodexService?
     switch provider {
+    case .grok, .local:
+        print("ask: provider \(provider.rawValue) is not supported by this probe command yet")
+        return 2
     case .claude:
         let path = option("claude-path", in: args)
         let claude = ClaudeService(pathOverride: { path })
@@ -202,6 +205,8 @@ private func e2eTitle(_ args: [String]) async -> Int32 {
     codex.urlOpener = { url in print("(not opening sign-in page on \(url.host ?? "?"))") }
     defer { codex.stop() }
     switch provider {
+    case .grok, .local:
+        print("title: provider \(provider.rawValue) uses the local fallback title")
     case .claude:
         _ = await waitForSettledAuth(claude)
         print("claude: \(claude.binaryPath ?? "-") · auth: \(e2eDescribe(claude.authState)) · model haiku")

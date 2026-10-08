@@ -1,12 +1,16 @@
 import Foundation
 
-// Shared vocabulary between the backends (Claude Code CLI, Codex app-server) and the app UI.
-// Backend implementations live in LecternCore/Claude and LecternCore/Codex; the app layer
-// (Sources/Lectern) only talks to them through ProviderService and ChatSession.
+// Shared vocabulary between the backends (Claude Code CLI, Codex app-server, Grok CLI, models on this
+// Mac) and the app UI. Backend implementations live in LecternCore/Claude, Codex, Grok and Local; the
+// app layer (Sources/Lectern) only talks to them through ProviderService and ChatSession.
 
 public enum Provider: String, CaseIterable, Codable, Identifiable, Sendable {
     case claude
     case codex
+    /// xAI Grok through the official Grok CLI (the user's xAI / X account).
+    case grok
+    /// No account: Apple's on-device model or a local Ollama model.
+    case local
 
     public var id: String { rawValue }
 
@@ -15,6 +19,8 @@ public enum Provider: String, CaseIterable, Codable, Identifiable, Sendable {
         switch self {
         case .claude: return "Claude"
         case .codex: return "ChatGPT"
+        case .grok: return "Grok"
+        case .local: return "On This Mac"
         }
     }
 }
@@ -198,9 +204,9 @@ public protocol ChatSession: AnyObject {
 }
 
 public enum LoginMethod: Sendable {
-    /// Official browser sign-in, driven from inside the app. The UI offers it for ChatGPT only.
+    /// Official browser sign-in, driven from inside the app. The UI offers it for ChatGPT and Grok.
     case browser
-    /// Codex only: device-code sign-in (shows a code to enter on a web page).
+    /// ChatGPT and Grok: device-code sign-in (shows a code to enter on a web page).
     case deviceCode
     /// Claude only: open Terminal running the official `claude auth login`.
     case terminal
